@@ -9,7 +9,7 @@ Usage:
     python scripts/benchmarks/pinchbench_codewhale.py --help
     python scripts/benchmarks/pinchbench_codewhale.py --suite task_calendar
     python scripts/benchmarks/pinchbench_codewhale.py --suite task_calendar,task_stock
-    python scripts/benchmarks/pinchbench_codewhale.py --all
+    python scripts/benchmarks/pinchbench_codewhale.py --suite all
 """
 # /// script
 # requires-python = ">=3.10"
@@ -25,7 +25,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,7 +35,6 @@ def load_task(task_path: Path) -> dict[str, Any]:
     """Load a PinchBench task markdown file."""
     content = task_path.read_text(encoding="utf-8")
 
-    # Extract YAML frontmatter
     fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", content, re.DOTALL)
     if not fm_match:
         raise ValueError(f"No YAML frontmatter in {task_path}")
@@ -45,7 +43,6 @@ def load_task(task_path: Path) -> dict[str, Any]:
     frontmatter = yaml.safe_load(fm_match.group(1))
     body = fm_match.group(2)
 
-    # Extract sections
     sections: dict[str, str] = {}
     current_section = None
     current_content: list[str] = []
@@ -77,7 +74,7 @@ def load_task(task_path: Path) -> dict[str, Any]:
     }
 
 
-def prepare_workspace(task: dict, run_dir: Path) -> Path:
+def prepare_workspace(task: dict, run_dir: Path, tasks_dir: Path) -> Path:
     """Create a temp workspace with any task-required files."""
     workspace = run_dir / task["task_id"]
     workspace.mkdir(parents=True, exist_ok=True)
@@ -93,13 +90,26 @@ def prepare_workspace(task: dict, run_dir: Path) -> Path:
         cwd=workspace, capture_output=True, check=False,
     )
 
-    # Create workspace files from task definition
+    # Copy workspace files — source paths may be relative to tasks/ or assets/
+    assets_dir = tasks_dir.parent / "assets"
     for wf in task.get("workspace_files", []):
-        if isinstance(wf, dict):
+        if isinstance(wf, dict) and "source" in wf and "dest" in wf:
+            # Try tasks_dir first, then assets_dir
+            src = tasks_dir / wf["source"]
+            if not src.exists():
+                src = assets_dir / wf["source"]
+            dst = workspace / wf["dest"]
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.exists():
+                shutil.copy2(src, dst)
+            else:
+                print(f"  Warning: workspace file not found: {wf['source']}", file=sys.stderr)
+        elif isinstance(wf, dict):
+            # Legacy format: {path: content}
             for path, content in wf.items():
                 fpath = workspace / path
                 fpath.parent.mkdir(parents=True, exist_ok=True)
-                fpath.write_text(content, encoding="utf-8")
+                fpath.write_text(str(content), encoding="utf-8")
 
     # Commit initial state
     subprocess.run(["git", "add", "-A"], cwd=workspace, capture_output=True, check=False)
@@ -162,14 +172,11 @@ def grade_automated(task: dict, workspace: Path, transcript: list) -> dict[str, 
     if not checks_code:
         return {"score": 0.0, "reason": "no automated checks defined"}
 
-    # Extract the grade function from the markdown code block
     code_match = re.search(r"```python\n(.*?)```", checks_code, re.DOTALL)
     if not code_match:
         return {"score": 0.0, "reason": "no python code block in automated checks"}
 
     code = code_match.group(1)
-
-    # Execute the grading function
     namespace: dict[str, Any] = {}
     try:
         exec(code, namespace)
@@ -183,7 +190,6 @@ def grade_automated(task: dict, workspace: Path, transcript: list) -> dict[str, 
     try:
         result = grade_fn(transcript, str(workspace))
         if isinstance(result, dict):
-            # PinchBench returns per-criterion scores; average them
             numeric = [v for v in result.values() if isinstance(v, (int, float))]
             avg = sum(numeric) / len(numeric) if numeric else 0.0
             result["score"] = avg
@@ -191,6 +197,83 @@ def grade_automated(task: dict, workspace: Path, transcript: list) -> dict[str, 
         return {"score": float(result) if result else 0.0}
     except Exception as e:
         return {"score": 0.0, "reason": f"grading failed: {e}"}
+
+
+def grade_llm_judge(task: dict, workspace: Path, transcript: list, model: Optional[str] = None) -> dict[str, Any]:
+    """Use codewhale as an LLM judge to grade a task."""
+    rubric = task.get("llm_judge_rubric")
+    if not rubric:
+        return {"score": 0.0, "reason": "no LLM judge rubric"}
+
+    criteria = task.get("grading_criteria", "")
+    expected = task.get("expected_behavior", "")
+
+    # Collect workspace files for context
+    ws_files = []
+    for f in workspace.rglob("*"):
+        if f.is_file() and ".git" not in str(f):
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")[:3000]
+                ws_files.append(f"--- {f.name} ---\n{content}")
+            except Exception:
+                ws_files.append(f"--- {f.name} --- (binary/unreadable)")
+
+    ws_content = "\n\n".join(ws_files[:10])  # Limit to 10 files
+
+    judge_prompt = f"""You are a grading judge. Evaluate whether the agent's output meets the task requirements.
+
+TASK: {task['name']}
+
+EXPECTED BEHAVIOR:
+{expected}
+
+GRADING CRITERIA:
+{criteria}
+
+LLM JUDGE RUBRIC:
+{rubric}
+
+AGENT'S WORKSPACE FILES:
+{ws_content}
+
+Score the task on a scale of 0.0 to 1.0. Respond with ONLY a JSON object:
+{{"score": <float>, "reason": "<brief explanation>"}}
+
+Be strict but fair. Partial credit is OK."""
+
+    cmd = ["codewhale", "exec", "--auto", "--workspace", str(workspace)]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.append(judge_prompt)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=workspace,
+            check=False,
+        )
+        # Extract JSON from response — strip control chars that break json.loads
+        output = result.stdout
+        # Remove ANSI escape codes
+        output = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
+        output = re.sub(r'\x1b\][^\x07]*\x07', '', output)
+        json_match = re.search(r'\{[^{}]*"score"[^{}]*\}', output)
+        if json_match:
+            raw = json_match.group()
+            # Strip control characters except newline/tab
+            raw = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', raw)
+            parsed = json.loads(raw)
+            return {
+                "score": float(parsed.get("score", 0.0)),
+                "reason": parsed.get("reason", "llm judge"),
+                "judge": "llm",
+            }
+        return {"score": 0.0, "reason": "llm judge returned unparseable response", "judge": "llm"}
+    except Exception as e:
+        return {"score": 0.0, "reason": f"llm judge failed: {e}", "judge": "llm"}
 
 
 def run_benchmark(
@@ -201,9 +284,7 @@ def run_benchmark(
     timeout_multiplier: float = 1.0,
 ) -> dict[str, Any]:
     """Run the benchmark suite."""
-    # Load tasks
     all_tasks: list[dict] = []
-    manifest_path = tasks_dir / "manifest.yaml"
 
     if suite == "all":
         task_files = sorted(tasks_dir.glob("task_*.md"))
@@ -227,13 +308,11 @@ def run_benchmark(
 
     print(f"Loaded {len(all_tasks)} tasks")
 
-    # Create run directory
     results_dir.mkdir(parents=True, exist_ok=True)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_dir = results_dir / run_id
     run_dir.mkdir()
 
-    # Record metadata
     cw_version = "unknown"
     try:
         vr = subprocess.run(["codewhale", "--version"], capture_output=True, text=True)
@@ -252,7 +331,6 @@ def run_benchmark(
     }
     (run_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
-    # Run tasks
     results: list[dict] = []
     total_score = 0.0
 
@@ -260,10 +338,10 @@ def run_benchmark(
         task_id = task["task_id"]
         print(f"\n{'='*60}")
         print(f"Task {i}/{len(all_tasks)}: {task_id} — {task['name']}")
-        print(f"  Category: {task['category']}")
+        print(f"  Category: {task['category']} | Grading: {task['grading_type']}")
         print(f"{'='*60}")
 
-        workspace = prepare_workspace(task, run_dir)
+        workspace = prepare_workspace(task, run_dir, tasks_dir)
         timeout = int(task["timeout_seconds"] * timeout_multiplier)
 
         # Run codewhale
@@ -274,17 +352,31 @@ def run_benchmark(
         if result["timed_out"]:
             print(f"  ⏰ TIMED OUT")
 
-        # Build a minimal transcript for grading
+        # Build transcript for grading
         transcript = [{"role": "user", "content": task["prompt"]}]
         if result["stdout"]:
             transcript.append({"role": "assistant", "content": result["stdout"]})
 
-        # Grade
+        # Grade based on type
+        grading_type = task.get("grading_type", "automated")
+        has_automated = task.get("automated_checks") and "```python" in (task.get("automated_checks") or "")
+        has_llm_rubric = bool(task.get("llm_judge_rubric"))
+
         grade_result = {"score": 0.0, "reason": "not graded"}
-        if task["automated_checks"]:
+
+        if has_automated:
             grade_result = grade_automated(task, workspace, transcript)
-        elif task.get("llm_judge_rubric"):
-            grade_result = {"score": 0.0, "reason": "llm judge not implemented yet"}
+
+        # If automated score is 0 and there's an LLM rubric, try LLM judge
+        if grade_result.get("score", 0.0) == 0.0 and has_llm_rubric:
+            print(f"  Running LLM judge...")
+            llm_result = grade_llm_judge(task, workspace, transcript, model=model)
+            # Use LLM judge score if it's better, or if no automated checks
+            if not has_automated or llm_result.get("score", 0.0) > 0.0:
+                grade_result = llm_result
+
+        if not has_automated and not has_llm_rubric:
+            grade_result = {"score": 0.0, "reason": "no grading method defined"}
 
         score = grade_result.get("score", 0.0)
         total_score += score
@@ -304,13 +396,11 @@ def run_benchmark(
         }
         results.append(task_result)
 
-        # Save individual result
         (run_dir / f"{task_id}.json").write_text(json.dumps(task_result, indent=2))
 
     # Summary
     avg_score = total_score / len(results) if results else 0.0
 
-    # Group by category
     categories: dict[str, list[dict]] = {}
     for r in results:
         cat = r["category"]
@@ -334,7 +424,6 @@ def run_benchmark(
 
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
-    # Print summary
     print(f"\n{'='*60}")
     print(f"PINCHBENCH SCORE SUMMARY (CodeWhale)")
     print(f"{'='*60}")
