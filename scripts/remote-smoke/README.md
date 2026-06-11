@@ -110,6 +110,15 @@ Once the droplet is provisioned and `gh` is authenticated with a
 fine-grained PAT (scoped to Hmbown/CodeWhale: Contents RW, Issues RW,
 PRs RW, Metadata R), an agent can work the full pick→PR loop headless.
 
+One-time git wiring after `gh auth login` so pushes use the PAT and
+commits have a stable identity:
+
+```bash
+gh auth setup-git
+git config --global user.name "whalebro-agent"
+git config --global user.email "whalebro-agent@users.noreply.github.com"
+```
+
 ```bash
 # 1. Pick an agent-ready issue
 gh issue list --repo Hmbown/CodeWhale --milestone v0.8.58 \
@@ -138,6 +147,7 @@ gh pr create --repo Hmbown/CodeWhale --base main \
 gh issue edit <N> --add-label needs-human --remove-label agent-in-progress
 ```
 
-See `docs/AGENT_RUNNER.md` for the full protocol including safety rules
-(PR-only delivery, no force-push, secrets never in argv/history/logs,
-one worktree per issue).
+See `docs/AGENT_RUNNER.md` (added by #3043; until that lands, the design
+background lives in `docs/rfcs/REMOTE_SETUP_DESIGN.md`) for the full
+protocol including safety rules (PR-only delivery, no force-push, secrets
+never in argv/history/logs, one worktree per issue).
