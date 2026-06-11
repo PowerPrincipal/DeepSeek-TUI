@@ -530,38 +530,28 @@ pub enum ToolCallDecision {
     Ask,
 }
 
-fn parse_tool_call_before_stdout(stdout: &str) -> ToolCallBeforeStdout {
+pub(crate) fn parse_tool_call_before_stdout(stdout: &str) -> ToolCallBeforeStdout {
+    let passthrough = ToolCallBeforeStdout {
+        decision: None,
+        reason: None,
+        updated_input: None,
+        additional_context: None,
+    };
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
-        return ToolCallBeforeStdout {
-            decision: None,
-            reason: None,
-            updated_input: None,
-            additional_context: None,
-        };
+        return passthrough;
     }
     let value: serde_json::Value = match serde_json::from_str(trimmed) {
         Ok(v) => v,
-        Err(_) => {
-            // Non-JSON stdout → legacy passthrough
-            return ToolCallBeforeStdout {
-                decision: None,
-                reason: None,
-                updated_input: None,
-                additional_context: None,
-            };
-        }
+        // Non-JSON stdout → legacy passthrough (allow).
+        Err(_) => return passthrough,
     };
-    let obj = match value.as_object() {
-        Some(o) => o,
-        None => {
-            return ToolCallBeforeStdout {
-                decision: None,
-                reason: None,
-                updated_input: None,
-                additional_context: None,
-            };
-        }
+    let Some(obj) = value.as_object() else {
+        tracing::warn!(
+            "tool_call_before hook stdout is JSON but not an object; \
+             ignoring it (legacy passthrough)"
+        );
+        return passthrough;
     };
     let decision = obj
         .get("decision")
@@ -570,13 +560,26 @@ fn parse_tool_call_before_stdout(stdout: &str) -> ToolCallBeforeStdout {
             "allow" => Some(ToolCallDecision::Allow),
             "deny" => Some(ToolCallDecision::Deny),
             "ask" => Some(ToolCallDecision::Ask),
-            _ => None,
+            other => {
+                tracing::warn!(
+                    "tool_call_before hook returned unrecognized decision \
+                     '{other}' (expected allow|deny|ask); treating as allow"
+                );
+                None
+            }
         });
     let reason = obj
         .get("reason")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let updated_input = obj.get("updatedInput").cloned();
+    let updated_input = obj.get("updatedInput").cloned().filter(|v| {
+        if v.is_object() {
+            true
+        } else {
+            tracing::warn!("tool_call_before hook updatedInput must be a JSON object; ignoring");
+            false
+        }
+    });
     let additional_context = obj
         .get("additionalContext")
         .and_then(|v| v.as_str())
@@ -2268,5 +2271,217 @@ exit 7
         assert!(!executor.has_hooks_for_event(HookEvent::ToolCallAfter));
         assert!(!executor.has_hooks_for_event(HookEvent::OnError));
         assert!(!executor.has_hooks_for_event(HookEvent::ModeChange));
+    }
+
+    // ── #3026: tool_call_before stdout decision contract ──────────────────
+
+    #[test]
+    fn tool_call_before_stdout_parses_deny_with_reason() {
+        let parsed =
+            parse_tool_call_before_stdout(r#"{"decision":"deny","reason":"blocked by policy"}"#);
+        assert_eq!(parsed.decision, Some(ToolCallDecision::Deny));
+        assert_eq!(parsed.reason.as_deref(), Some("blocked by policy"));
+        assert!(parsed.updated_input.is_none());
+        assert!(parsed.additional_context.is_none());
+    }
+
+    #[test]
+    fn tool_call_before_stdout_parses_ask_and_allow() {
+        let ask = parse_tool_call_before_stdout(r#"{"decision":"ask"}"#);
+        assert_eq!(ask.decision, Some(ToolCallDecision::Ask));
+
+        let allow = parse_tool_call_before_stdout(r#"{"decision":"allow"}"#);
+        assert_eq!(allow.decision, Some(ToolCallDecision::Allow));
+    }
+
+    #[test]
+    fn tool_call_before_stdout_parses_updated_input_object() {
+        let parsed =
+            parse_tool_call_before_stdout(r#"{"updatedInput":{"command":"ls -la","timeout":5}}"#);
+        assert!(parsed.decision.is_none());
+        assert_eq!(
+            parsed.updated_input,
+            Some(serde_json::json!({"command":"ls -la","timeout":5}))
+        );
+    }
+
+    #[test]
+    fn tool_call_before_stdout_rejects_non_object_updated_input() {
+        let parsed = parse_tool_call_before_stdout(r#"{"updatedInput":"rm -rf /"}"#);
+        assert!(
+            parsed.updated_input.is_none(),
+            "updatedInput must be a JSON object"
+        );
+        let parsed = parse_tool_call_before_stdout(r#"{"updatedInput":[1,2]}"#);
+        assert!(parsed.updated_input.is_none());
+    }
+
+    #[test]
+    fn tool_call_before_stdout_parses_additional_context() {
+        let parsed =
+            parse_tool_call_before_stdout(r#"{"additionalContext":"remember the style guide"}"#);
+        assert_eq!(
+            parsed.additional_context.as_deref(),
+            Some("remember the style guide")
+        );
+    }
+
+    #[test]
+    fn tool_call_before_stdout_empty_and_non_json_are_passthrough() {
+        for stdout in ["", "   \n  ", "ok, proceeding", "exit code zero"] {
+            let parsed = parse_tool_call_before_stdout(stdout);
+            assert!(parsed.decision.is_none(), "stdout {stdout:?}");
+            assert!(parsed.reason.is_none());
+            assert!(parsed.updated_input.is_none());
+            assert!(parsed.additional_context.is_none());
+        }
+    }
+
+    #[test]
+    fn tool_call_before_stdout_json_without_decision_is_passthrough() {
+        let parsed = parse_tool_call_before_stdout(r#"{"status":"fine"}"#);
+        assert!(parsed.decision.is_none());
+    }
+
+    #[test]
+    fn tool_call_before_stdout_non_object_json_is_passthrough() {
+        for stdout in [r#""deny""#, "[1,2,3]", "42", "true"] {
+            let parsed = parse_tool_call_before_stdout(stdout);
+            assert!(parsed.decision.is_none(), "stdout {stdout:?}");
+        }
+    }
+
+    #[test]
+    fn tool_call_before_stdout_unknown_decision_treated_as_allow() {
+        let parsed = parse_tool_call_before_stdout(r#"{"decision":"block"}"#);
+        assert!(parsed.decision.is_none());
+    }
+
+    // ── #3026: glob matchers for tool_name conditions ──────────────────────
+
+    #[test]
+    fn tool_name_glob_matches_mcp_prefix() {
+        assert!(HookExecutor::tool_name_matches_condition(
+            "mcp__github__create_issue",
+            "mcp__*"
+        ));
+        assert!(!HookExecutor::tool_name_matches_condition(
+            "read_file",
+            "mcp__*"
+        ));
+    }
+
+    #[test]
+    fn tool_name_exact_match_still_works() {
+        assert!(HookExecutor::tool_name_matches_condition(
+            "read_file",
+            "read_file"
+        ));
+        assert!(!HookExecutor::tool_name_matches_condition(
+            "read_files",
+            "read_file"
+        ));
+    }
+
+    #[test]
+    fn tool_name_glob_escapes_regex_metacharacters() {
+        // Without escaping, `.` would match any character.
+        assert!(!HookExecutor::tool_name_matches_condition(
+            "mcpXgithub",
+            "mcp.git*"
+        ));
+        assert!(HookExecutor::tool_name_matches_condition(
+            "mcp.github",
+            "mcp.git*"
+        ));
+        // `+` and parens must be literal too.
+        assert!(HookExecutor::tool_name_matches_condition(
+            "weird+tool(name)",
+            "weird+tool(*)"
+        ));
+    }
+
+    #[test]
+    fn tool_name_glob_supports_infix_and_suffix_positions() {
+        assert!(HookExecutor::tool_name_matches_condition(
+            "mcp__github__create_issue",
+            "mcp__*__create_issue"
+        ));
+        assert!(HookExecutor::tool_name_matches_condition(
+            "task_shell_start",
+            "*_shell_start"
+        ));
+        assert!(!HookExecutor::tool_name_matches_condition(
+            "task_shell_wait",
+            "*_shell_start"
+        ));
+    }
+
+    // ── #3026: project-local hooks ─────────────────────────────────────────
+
+    #[test]
+    fn load_with_project_missing_file_keeps_global() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let global = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::ToolCallBefore, "echo global")],
+            ..HooksConfig::default()
+        };
+
+        let merged = HooksConfig::load_with_project(global.clone(), dir.path());
+        assert_eq!(merged.hooks.len(), 1);
+        assert_eq!(merged.hooks[0].command, "echo global");
+    }
+
+    #[test]
+    fn load_with_project_appends_project_hooks_after_global() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = dir.path().join(".codewhale");
+        std::fs::create_dir_all(&project_dir).expect("mkdir .codewhale");
+        std::fs::write(
+            project_dir.join("hooks.toml"),
+            r#"
+[[hooks]]
+event = "tool_call_before"
+command = "echo project"
+"#,
+        )
+        .expect("write hooks.toml");
+
+        let global = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::ToolCallBefore, "echo global")],
+            ..HooksConfig::default()
+        };
+
+        let merged = HooksConfig::load_with_project(global, dir.path());
+        assert_eq!(merged.hooks.len(), 2);
+        assert_eq!(
+            merged.hooks[0].command, "echo global",
+            "global hooks run first"
+        );
+        assert_eq!(
+            merged.hooks[1].command, "echo project",
+            "project hooks are appended after global"
+        );
+    }
+
+    #[test]
+    fn load_with_project_malformed_file_falls_back_to_global() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = dir.path().join(".codewhale");
+        std::fs::create_dir_all(&project_dir).expect("mkdir .codewhale");
+        std::fs::write(project_dir.join("hooks.toml"), "this is [ not toml")
+            .expect("write hooks.toml");
+
+        let global = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::ToolCallBefore, "echo global")],
+            ..HooksConfig::default()
+        };
+
+        let merged = HooksConfig::load_with_project(global, dir.path());
+        assert_eq!(merged.hooks.len(), 1, "malformed project file is ignored");
+        assert_eq!(merged.hooks[0].command, "echo global");
     }
 }
