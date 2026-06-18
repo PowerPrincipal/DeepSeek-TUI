@@ -2933,9 +2933,16 @@ fn current_git_head(workspace: &std::path::Path) -> Option<String> {
 
 fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
     if config.skills_config().scan_codewhale_only() {
+        let canonical_workspace = match fs::canonicalize(workspace) {
+            Ok(path) => path,
+            Err(_) => return config.skills_dir(),
+        };
         let codewhale_skills_dir = workspace.join(".codewhale").join("skills");
-        if codewhale_skills_dir.is_dir() {
-            return codewhale_skills_dir;
+        if let Ok(canonical_skills) = fs::canonicalize(&codewhale_skills_dir)
+            && canonical_skills.starts_with(&canonical_workspace)
+            && canonical_skills.is_dir()
+        {
+            return canonical_skills;
         }
         return config.skills_dir();
     }
@@ -6445,7 +6452,8 @@ mod tests {
         };
         let resolved = resolve_skills_dir(&config, workspace);
 
-        assert_eq!(resolved, codewhale_skills);
+        let expected = fs::canonicalize(&codewhale_skills).expect("canonical codewhale skills");
+        assert_eq!(resolved, expected);
     }
 
     #[test]
@@ -6548,6 +6556,41 @@ mod tests {
             resolved,
             config.skills_dir(),
             "with no valid in-workspace skills dir, resolution should fall back to config"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_skills_dir_rejects_codewhale_only_symlink_escaping_workspace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = tmp.path().join("workspace");
+        let escape_target = tmp.path().join("escape_target");
+        fs::create_dir_all(&workspace_root).expect("create workspace");
+        fs::create_dir_all(&escape_target).expect("create escape target");
+
+        let dotcodewhale = workspace_root.join(".codewhale");
+        fs::create_dir_all(&dotcodewhale).expect("create .codewhale");
+        let bad_link = dotcodewhale.join("skills");
+        std::os::unix::fs::symlink(&escape_target, &bad_link).expect("symlink");
+
+        let config = Config {
+            skills: Some(crate::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let resolved = resolve_skills_dir(&config, &workspace_root);
+
+        let canon_escape = fs::canonicalize(&escape_target).expect("canon escape");
+        assert_ne!(
+            resolved, canon_escape,
+            "CodeWhale-only symlink escaping workspace must not be resolved as skills dir"
+        );
+        assert_eq!(
+            resolved,
+            config.skills_dir(),
+            "with no valid in-workspace CodeWhale skills dir, resolution should fall back to config"
         );
     }
 }

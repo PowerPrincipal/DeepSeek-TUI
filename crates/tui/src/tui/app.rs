@@ -71,7 +71,7 @@ pub(crate) fn resolve_skills_dir(
 ) -> PathBuf {
     if config.skills_config().scan_codewhale_only() {
         let codewhale_skills_dir = workspace.join(".codewhale").join("skills");
-        if codewhale_skills_dir.exists() {
+        if codewhale_skills_dir.is_dir() {
             return codewhale_skills_dir;
         }
         return global_skills_dir.to_path_buf();
@@ -6568,6 +6568,31 @@ mod tests {
             "strict scan should not cache Claude skills: {:?}",
             app.cached_skills
         );
+    }
+
+    #[test]
+    fn resolve_skills_dir_requires_codewhale_skills_to_be_directory() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(workspace.join(".codewhale")).expect("codewhale dir");
+        std::fs::write(
+            workspace.join(".codewhale").join("skills"),
+            "not a directory",
+        )
+        .expect("skills file");
+
+        let global_skills_dir = tmp.path().join("global-skills");
+        let config = Config {
+            skills: Some(crate::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let resolved = resolve_skills_dir(&workspace, &global_skills_dir, &config);
+
+        assert_eq!(resolved, global_skills_dir);
     }
 
     #[test]
