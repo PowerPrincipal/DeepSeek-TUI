@@ -102,6 +102,12 @@ jobs:
         with:
           toolchain: '1.88'
           components: rustfmt, clippy
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Enable sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
         run: |
           for i in 1 2 3 4 5; do
@@ -159,6 +165,14 @@ jobs:
         if: runner.os != 'Linux'
       - uses: dtolnay/rust-toolchain@stable
         if: runner.os != 'Linux'
+      - uses: mozilla-actions/sccache-action@v0.0.10
+        if: runner.os != 'Linux'
+      - name: Enable sccache
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
       - uses: Swatinem/rust-cache@v2
         if: runner.os != 'Linux'
         with:
@@ -189,6 +203,14 @@ jobs:
         if: runner.os != 'Linux'
       - uses: dtolnay/rust-toolchain@stable
         if: runner.os != 'Linux'
+      - uses: mozilla-actions/sccache-action@v0.0.10
+        if: runner.os != 'Linux'
+      - name: Enable sccache
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
       - uses: actions/setup-node@v6
         if: runner.os != 'Linux'
         with:
@@ -215,6 +237,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Enable sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
         run: |
           for i in 1 2 3 4 5; do
