@@ -451,7 +451,6 @@ pub fn plan_compaction(
 }
 
 #[allow(dead_code)]
-
 fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<usize>) {
     if pinned_indices.is_empty() {
         return;
