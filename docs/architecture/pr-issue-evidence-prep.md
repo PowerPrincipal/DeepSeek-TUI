@@ -1,6 +1,6 @@
 # EPIC Evidence Preparation
 
-## EPIC-002 Closure Evidence (Draft — Phase 7 In Progress)
+## EPIC-002 Closure Evidence (Draft — Phase 6; awaiting code review approval for Phase 7)
 
 **Epic:** EPIC-002 — Command Single Responsibility Extraction
 **Related EPIC:** [#2870](https://github.com/Hmbown/CodeWhale/issues/2870)
@@ -8,11 +8,12 @@
 [#2851](https://github.com/Hmbown/CodeWhale/pull/2851),
 [#2887](https://github.com/Hmbown/CodeWhale/pull/2887)
 
-This section records draft EPIC-002 closure evidence prepared during Phase 6
-and polished during Phase 7. Layer 4.4 (FEAT-008) is currently in Phase 7
-(Testing and Polish). All evidence below has been verified by running the
-documented commands in the current working tree. Final pass/fail markers for
-the PR body replace these placeholders only after the Phase 8 final gate.
+This section records draft EPIC-002 closure evidence prepared during Phase 6.
+Layer 4.4 (FEAT-008) is currently in Phase 6 (Integration; awaiting code
+review approval before advancing to Phase 7). All evidence below has been
+verified by running the documented commands in the current working tree. Final
+pass/fail markers for the PR body replace these placeholders only after the
+Phase 8 final gate.
 
 ### PR References
 
@@ -26,17 +27,17 @@ the PR body replace these placeholders only after the Phase 8 final gate.
 
 | AT ID | Check | Result |
 |-------|-------|--------|
-| AT-001 | `cargo test -p codewhale-tui --test epic_acceptance_harness` | ⬜ Draft (Phase 7 current evidence) |
-| AT-002 | `every_registered_command_dispatches_to_a_handler` | ⬜ Draft (Phase 7 current evidence) |
-| AT-003 | `every_command_alias_dispatches_to_a_handler` | ⬜ Draft (Phase 7 current evidence) |
-| AT-004 | Help/palette/completion surface tests (21 palette, 18 completion) | ⬜ Draft (Phase 7 current evidence) |
-| AT-005 | `dispatch_prefers_user_command_over_builtin_with_same_name` | ⬜ Draft (Phase 7 current evidence) |
-| AT-006 | `hidden_user_commands_still_dispatch_directly` | ⬜ Draft (Phase 7 current evidence) |
-| AT-007 | `unknown_command_suggests_nearest_match` | ⬜ Draft (Phase 7 current evidence) |
-| AT-008 | `command_registry_has_unique_names_and_aliases` | ⬜ Draft (Phase 7 current evidence) |
-| AT-009 | `command_ownership_contract_is_enforced` | ⬜ Draft (Phase 7 current evidence) |
-| AT-010 | Cleanup inventory — no undocumented migration paths | ⬜ Draft (Phase 7 current evidence) |
-| AT-011 | Final closure matrix | ⬜ Draft (Phase 7 current evidence — subject to Phase 8 final gate) |
+| AT-001 | `cargo test -p codewhale-tui --test epic_acceptance_harness` | ⬜ Draft (Phase 6 current evidence) |
+| AT-002 | `every_registered_command_dispatches_to_a_handler` | ⬜ Draft (Phase 6 current evidence) |
+| AT-003 | `every_command_alias_dispatches_to_a_handler` | ⬜ Draft (Phase 6 current evidence) |
+| AT-004 | Help/palette/completion surface tests (21 palette, 18 completion) | ⬜ Draft (Phase 6 current evidence) |
+| AT-005 | `dispatch_prefers_user_command_over_builtin_with_same_name` | ⬜ Draft (Phase 6 current evidence) |
+| AT-006 | `hidden_user_commands_still_dispatch_directly` | ⬜ Draft (Phase 6 current evidence) |
+| AT-007 | `unknown_command_suggests_nearest_match` | ⬜ Draft (Phase 6 current evidence) |
+| AT-008 | `command_registry_has_unique_names_and_aliases` | ⬜ Draft (Phase 6 current evidence) |
+| AT-009 | `command_ownership_contract_is_enforced` | ⬜ Draft (Phase 6 current evidence) |
+| AT-010 | Cleanup inventory — no undocumented migration paths | ⬜ Draft (Phase 6 current evidence) |
+| AT-011 | Final closure matrix | ⬜ Draft (Phase 6 current evidence — subject to Phase 8 final gate) |
 
 ### Permanent Exceptions
 
