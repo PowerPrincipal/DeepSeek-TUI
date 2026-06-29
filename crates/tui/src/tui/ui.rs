@@ -2959,8 +2959,17 @@ async fn run_event_loop(
                             &approval_grouping_key,
                             approval_force_prompt,
                         ) {
+                            // #3790: distinguish a mode auto-approval (e.g. YOLO)
+                            // from re-using an earlier in-session user approval, so
+                            // the engine stamps the tool result honestly instead of
+                            // always claiming the user approved it.
+                            let by_mode = app_auto_approve_enabled(app);
                             log_sensitive_event(
-                                "tool.approval.auto_approve",
+                                if by_mode {
+                                    "tool.approval.auto_approve_mode"
+                                } else {
+                                    "tool.approval.auto_approve_session"
+                                },
                                 serde_json::json!({
                                     "tool_name": tool_name,
                                     "approval_key": approval_key,
@@ -2968,7 +2977,11 @@ async fn run_event_loop(
                                     "mode": app.mode.label(),
                                 }),
                             );
-                            let _ = engine_handle.approve_tool_call(id.clone()).await;
+                            if by_mode {
+                                let _ = engine_handle.approve_tool_call_by_mode(id.clone()).await;
+                            } else {
+                                let _ = engine_handle.approve_tool_call(id.clone()).await;
+                            }
                         } else if app.approval_mode == ApprovalMode::Never {
                             log_sensitive_event(
                                 "tool.approval.auto_deny",

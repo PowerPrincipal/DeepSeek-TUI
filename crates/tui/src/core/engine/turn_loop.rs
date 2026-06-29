@@ -43,19 +43,6 @@ pub(super) fn registered_tool_approval_required(
     !auto_approve
 }
 
-pub(super) fn auto_review_force_prompt_overrides_auto_approve(
-    audit_event: &serde_json::Value,
-) -> bool {
-    audit_event
-        .get("decision")
-        .and_then(serde_json::Value::as_str)
-        == Some("hold_for_review")
-        && audit_event
-            .get("action_kind")
-            .and_then(serde_json::Value::as_str)
-            == Some("publish")
-}
-
 pub(super) fn tool_error_degradation_runtime_hint(
     consecutive_tool_error_steps: u32,
     step_error_tool_names: &[String],
@@ -1716,7 +1703,7 @@ impl Engine {
                 if McpPool::is_mcp_tool(&tool_name) {
                     read_only = mcp_tool_is_read_only(&tool_name);
                     supports_parallel = mcp_tool_is_parallel_safe(&tool_name);
-                    approval_required = !read_only;
+                    approval_required = !read_only && !self.session.auto_approve;
                     approval_description = mcp_tool_approval_description(&tool_name);
                 } else if let Some(registry) = tool_registry
                     && let Some(spec) = registry.get(&tool_name)
@@ -1731,13 +1718,13 @@ impl Engine {
                     read_only = spec.is_read_only_for(&tool_input);
                     detached_start = spec.starts_detached_for(&tool_input);
                 } else if tool_name == CODE_EXECUTION_TOOL_NAME {
-                    approval_required = true;
+                    approval_required = !self.session.auto_approve;
                     approval_description =
                         "Run model-provided Python code in local execution sandbox".to_string();
                     supports_parallel = false;
                     read_only = false;
                 } else if tool_name == JS_EXECUTION_TOOL_NAME {
-                    approval_required = true;
+                    approval_required = !self.session.auto_approve;
                     approval_description =
                         "Run model-provided JavaScript code in local Node.js execution sandbox"
                             .to_string();
@@ -1763,7 +1750,7 @@ impl Engine {
                 // for tools the registry would auto-run. Must stay after the
                 // registry-based computation above, which assigns rather than
                 // ORs `approval_required`.
-                if hook_requires_approval {
+                if hook_requires_approval && !self.session.auto_approve {
                     approval_required = true;
                 }
 
@@ -1787,13 +1774,10 @@ impl Engine {
                     if let Some(decision) = ask_rule_decision {
                         match decision {
                             ToolAskRuleDecision::Prompt(reason) => {
-                                // YOLO mode (auto_approve) is the explicit
-                                // "no approvals" contract: a typed ask-rule
-                                // must not pop a modal in YOLO. The
-                                // auto_review safety floor below still
-                                // independently holds publish/destructive
-                                // actions, and a typed deny rule still
-                                // blocks hard.
+                                // #3790: the mode is the sole authority — a typed
+                                // ask-rule prompts in Agent/Plan but never in YOLO
+                                // (auto_approve). A typed deny rule still blocks
+                                // hard, in every mode.
                                 if !self.session.auto_approve {
                                     approval_required = true;
                                     approval_description = reason;
@@ -1828,18 +1812,12 @@ impl Engine {
                     match decision {
                         AutoReviewPlanDecision::NoChange => {}
                         AutoReviewPlanDecision::ForcePrompt(reason) => {
-                            // YOLO mode (auto_approve) skips ordinary review
-                            // holds, including Background+Destructive shell
-                            // holds created by the coarse shell risk fallback.
-                            // Publish-like actions are different: the
-                            // safety_floor marks them as durable-review holds
-                            // regardless of mode, so they must still surface a
-                            // forced prompt. A Block decision (typed deny
-                            // rules / hard blocks) still holds below
-                            // regardless of mode.
-                            if !self.session.auto_approve
-                                || auto_review_force_prompt_overrides_auto_approve(&audit_event)
-                            {
+                            // #3790: the Tab-selected mode is the sole authority.
+                            // YOLO (auto_approve) suppresses every review-driven
+                            // prompt — there is no longer any "force prompt past
+                            // YOLO" path. A Block decision (a typed deny rule)
+                            // still hard-blocks below, in every mode.
+                            if !self.session.auto_approve {
                                 approval_required = true;
                                 approval_description = reason;
                                 approval_force_prompt = true;
@@ -2297,6 +2275,16 @@ impl Engine {
                                         "caller": caller_type_for_tool_use(tool_caller.as_ref()),
                                     }));
                                     (None, None, Some(ToolApprovalStamp::ApprovedByUser))
+                                }
+                                Ok(ApprovalResult::ApprovedByMode) => {
+                                    emit_tool_audit(json!({
+                                        "event": "tool.approval_decision",
+                                        "tool_id": tool_id.clone(),
+                                        "tool_name": tool_name.clone(),
+                                        "decision": "auto_approved_by_mode",
+                                        "caller": caller_type_for_tool_use(tool_caller.as_ref()),
+                                    }));
+                                    (None, None, Some(ToolApprovalStamp::AutoApprovedByMode))
                                 }
                                 Ok(ApprovalResult::Denied) => {
                                     emit_tool_audit(json!({

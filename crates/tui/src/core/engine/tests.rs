@@ -1,10 +1,7 @@
 use super::*;
 
 use super::context::{COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS};
-use super::turn_loop::{
-    auto_review_force_prompt_overrides_auto_approve, registered_tool_approval_required,
-    tool_error_degradation_runtime_hint,
-};
+use super::turn_loop::{registered_tool_approval_required, tool_error_degradation_runtime_hint};
 use crate::config::ApiProvider;
 use crate::models::{SystemBlock, Usage};
 use crate::test_support::{EnvVarGuard, lock_test_env};
@@ -471,31 +468,12 @@ fn model_turn_event_timeout() -> Duration {
 }
 
 #[test]
-fn auto_review_policy_forces_prompt_for_publish_like_actions() {
-    let (decision, audit) = auto_review_plan_decision(
-        &crate::tui::auto_review::AutoReviewPolicy::default(),
-        "git_push",
-        &json!({"remote": "origin", "branch": "main"}),
-        crate::tui::auto_review::RunOrigin::Interactive,
-        crate::tui::approval::ApprovalMode::Auto,
-        Some("push the release branch"),
-        true,
-        false,
-    );
-
-    assert_eq!(
-        decision,
-        AutoReviewPlanDecision::ForcePrompt(
-            "Auto-review policy requires approval: publish-like actions require a durable review step"
-                .to_string()
-        )
-    );
-    assert_eq!(audit["decision"], "hold_for_review");
-    assert_eq!(audit["action_kind"], "publish");
-}
-
-#[test]
-fn auto_review_policy_forces_prompt_for_shell_git_push() {
+fn auto_review_classifies_publish_but_no_longer_force_prompts_it() {
+    // #3790: publish-like shell is still *classified* as publish (audit only),
+    // but with the safety floor removed the policy no longer forces a prompt.
+    // The mode alone decides: Agent prompts via the normal approval path, YOLO
+    // runs with zero prompts. Previously this returned ForcePrompt with a
+    // hold_for_review audit decision and was overridden past YOLO.
     let (decision, audit) = auto_review_plan_decision(
         &crate::tui::auto_review::AutoReviewPolicy::default(),
         "exec_shell",
@@ -507,16 +485,9 @@ fn auto_review_policy_forces_prompt_for_shell_git_push() {
         false,
     );
 
-    assert_eq!(
-        decision,
-        AutoReviewPlanDecision::ForcePrompt(
-            "Auto-review policy requires approval: publish-like actions require a durable review step"
-                .to_string()
-        )
-    );
-    assert_eq!(audit["decision"], "hold_for_review");
+    assert_eq!(decision, AutoReviewPlanDecision::NoChange);
     assert_eq!(audit["action_kind"], "publish");
-    assert!(auto_review_force_prompt_overrides_auto_approve(&audit));
+    assert_ne!(audit["decision"], "hold_for_review");
 }
 
 #[test]
@@ -538,7 +509,11 @@ fn auto_review_policy_does_not_force_prompt_for_shell_git_tag_list_probe() {
 }
 
 #[test]
-fn auto_review_policy_blocks_hold_when_approval_is_never() {
+fn auto_review_policy_no_longer_holds_publish_even_when_approval_is_never() {
+    // #3790: the publish "durable review" floor was removed and deferred to
+    // 0.8.67. The auto-review policy no longer forces a hold or a Never-block
+    // for a publish-like action; refusal is the job of a typed deny rule or the
+    // approval gate (ApprovalMode::Never denies at the chokepoint), not a floor.
     let (decision, audit) = auto_review_plan_decision(
         &crate::tui::auto_review::AutoReviewPolicy::default(),
         "github_publish_release",
@@ -550,15 +525,9 @@ fn auto_review_policy_blocks_hold_when_approval_is_never() {
         false,
     );
 
-    assert_eq!(
-        decision,
-        AutoReviewPlanDecision::Block(
-            "Auto-review policy requires approval: publish-like actions require a durable review step"
-                .to_string()
-        )
-    );
+    assert_eq!(decision, AutoReviewPlanDecision::NoChange);
     assert_eq!(audit["approval_mode"], "NEVER");
-    assert_eq!(audit["decision"], "hold_for_review");
+    assert_ne!(audit["decision"], "hold_for_review");
 }
 
 #[test]
@@ -615,7 +584,11 @@ fn auto_review_run_origin_marks_detached_tools_as_background() {
 }
 
 #[test]
-fn auto_review_policy_holds_background_destructive_suggest_approval() {
+fn auto_review_policy_no_longer_holds_background_destructive_under_suggest() {
+    // #3790: the background/headless destructive floor was removed and deferred
+    // to 0.8.67. Agent-mode prompting for a write-capable shell still happens
+    // via the normal registered-tool approval path; the auto-review policy no
+    // longer force-prompts it.
     let (decision, audit) = auto_review_plan_decision(
         &crate::tui::auto_review::AutoReviewPolicy::default(),
         "exec_shell",
@@ -627,15 +600,9 @@ fn auto_review_policy_holds_background_destructive_suggest_approval() {
         false,
     );
 
-    assert_eq!(
-        decision,
-        AutoReviewPlanDecision::ForcePrompt(
-            "Auto-review policy requires approval: destructive background/headless actions cannot auto-approve"
-                .to_string()
-        )
-    );
+    assert_eq!(decision, AutoReviewPlanDecision::NoChange);
     assert_eq!(audit["run_origin"], "background");
-    assert_eq!(audit["decision"], "hold_for_review");
+    assert_ne!(audit["decision"], "hold_for_review");
 }
 
 #[test]
@@ -663,7 +630,10 @@ fn auto_review_policy_preserves_yolo_for_detached_destructive_tools() {
 }
 
 #[test]
-fn auto_review_policy_blocks_background_hold_when_approval_is_never() {
+fn auto_review_policy_no_longer_blocks_background_destructive_under_never() {
+    // #3790: with the background/headless destructive floor removed, the policy
+    // returns NoChange even under Never; Never denies at the approval gate, not
+    // via an auto-review hold. Deferred to 0.8.67.
     let (decision, audit) = auto_review_plan_decision(
         &crate::tui::auto_review::AutoReviewPolicy::default(),
         "exec_shell",
@@ -675,13 +645,7 @@ fn auto_review_policy_blocks_background_hold_when_approval_is_never() {
         false,
     );
 
-    assert_eq!(
-        decision,
-        AutoReviewPlanDecision::Block(
-            "Auto-review policy requires approval: destructive background/headless actions cannot auto-approve"
-                .to_string()
-        )
-    );
+    assert_eq!(decision, AutoReviewPlanDecision::NoChange);
     assert_eq!(audit["approval_mode"], "NEVER");
     assert_eq!(audit["run_origin"], "background");
 }
@@ -1479,6 +1443,37 @@ fn approval_stamp_preserves_existing_metadata() {
     assert_eq!(metadata["summary"], "kept");
     assert_eq!(metadata["approval"]["decision"], "approved_with_policy");
     assert!(result.content.contains("adjusted execution policy"));
+}
+
+#[test]
+fn auto_approved_by_mode_stamp_is_honest_and_not_attributed_to_the_user() {
+    // #3790: when the mode (e.g. YOLO) auto-approves a tool that would otherwise
+    // prompt, the model must be told the truth — auto-approved by the mode, NOT
+    // "approved by the user", which never happened.
+    let mut result = ToolResult::success("stdout");
+
+    stamp_tool_result_approval(&mut result, ToolApprovalStamp::AutoApprovedByMode);
+
+    assert!(
+        result.content.starts_with("[approval] "),
+        "{}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("approved by the user"),
+        "must not claim the user approved it: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("auto-approved") && result.content.contains("mode"),
+        "should attribute the run to the mode: {}",
+        result.content
+    );
+    assert!(result.content.ends_with("stdout"));
+
+    let metadata = result.metadata.expect("approval metadata");
+    assert_eq!(metadata["approval"]["decision"], "auto_approved_by_mode");
+    assert_eq!(metadata["approval"]["model_visible"], true);
 }
 
 #[test]
@@ -2584,15 +2579,13 @@ async fn yolo_mode_does_not_prompt_for_model_driven_typed_ask_rule() {
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn yolo_mode_does_not_prompt_for_background_shell_safety_floor() {
-    // Regression: every shell command is classified RiskLevel::Destructive, and
-    // a background shell (input `background: true`) gets RunOrigin::Background.
-    // The auto_review safety_floor returns HoldForReview for Background +
-    // Destructive, which maps to ForcePrompt. Before the fix that ForcePrompt
-    // set approval_required=true WITHOUT checking auto_approve, so every
-    // background shell command prompted even in YOLO. Foreground shells are
-    // RunOrigin::Interactive and never hit that branch (which is why only
-    // background commands surfaced the bug). A typed Block/deny still holds.
+async fn yolo_mode_does_not_prompt_for_background_shell() {
+    // #3790 regression guard: YOLO is the sole authority and runs every tool
+    // with zero prompts, including a background shell (input `background: true`,
+    // which gets RunOrigin::Background and is classified RiskLevel::Destructive).
+    // The auto-review override "safety floor" that used to force a prompt here —
+    // even in YOLO — was removed; the mode now decides alone. A typed Block/deny
+    // rule still hard-blocks regardless of mode.
     use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2724,10 +2717,14 @@ async fn yolo_mode_does_not_prompt_for_background_shell_safety_floor() {
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn yolo_mode_forces_prompt_for_publish_like_shell() {
-    // YOLO keeps ordinary/background approvals out of the way, but publish-like
-    // actions are deliberately durable-review holds. They must still surface a
-    // forced prompt even when `auto_approve` is true.
+async fn yolo_mode_runs_publish_like_shell_without_a_prompt() {
+    // #3790: YOLO is the sole authority and runs every tool with zero prompts —
+    // including publish-like shell (`git push` / `cargo publish` / `gh release`).
+    // The old #3735 behavior force-prompted publish past YOLO via the auto-review
+    // safety floor; that floor was removed and the mode now decides alone. So no
+    // Event::ApprovalRequired may fire, and the command must run. (Backgrounded
+    // so the mock's terminal response keys off the stable "Background task
+    // started" tool result; the publish-like classification is what matters.)
     use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -2738,7 +2735,7 @@ async fn yolo_mode_forces_prompt_for_publish_like_shell() {
     let tool_call_sse = concat!(
         "data: {\"id\":\"chatcmpl-publish\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[",
         "{\"index\":0,\"id\":\"call_publish\",\"type\":\"function\",\"function\":{\"name\":\"exec_shell\",",
-        "\"arguments\":\"{\\\"command\\\":\\\"cargo publish --dry-run\\\"}\"}}",
+        "\"arguments\":\"{\\\"command\\\":\\\"git push origin main\\\",\\\"background\\\":true}\"}}",
         "]},\"finish_reason\":null}]}\n\n",
         "data: {\"id\":\"chatcmpl-publish\",\"choices\":[{\"index\":0,\"delta\":{},",
         "\"finish_reason\":\"tool_calls\"}]}\n\n",
@@ -2754,7 +2751,7 @@ async fn yolo_mode_forces_prompt_for_publish_like_shell() {
 
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(body_string_contains("denied by user"))
+        .and(body_string_contains("Background task started"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
@@ -2792,7 +2789,6 @@ async fn yolo_mode_forces_prompt_for_publish_like_shell() {
         &api_config,
     );
     let run_task = tokio::spawn(engine.run());
-    let handle_for_approval = handle.clone();
 
     handle
         .send(Op::SendMessage {
@@ -2809,7 +2805,7 @@ async fn yolo_mode_forces_prompt_for_publish_like_shell() {
             allow_shell: true,
             trust_mode: true,
             auto_approve: true,
-            approval_mode: crate::tui::approval::ApprovalMode::Auto,
+            approval_mode: crate::tui::approval::ApprovalMode::Bypass,
             translation_enabled: false,
             show_thinking: true,
             allowed_tools: None,
@@ -2821,43 +2817,20 @@ async fn yolo_mode_forces_prompt_for_publish_like_shell() {
         .await
         .expect("send model turn");
 
-    let mut saw_forced_approval = false;
+    let mut saw_approval_prompt = false;
+    let mut saw_complete = false;
     let mut rx = handle.rx_event.write().await;
     while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
         .await
         .expect("timed out waiting for engine event")
     {
         match event {
-            Event::ApprovalRequired {
-                id,
-                tool_name,
-                description,
-                input,
-                approval_force_prompt,
-                ..
-            } => {
-                saw_forced_approval = true;
-                assert_eq!(tool_name, "exec_shell");
-                assert_eq!(input["command"], json!("cargo publish --dry-run"));
-                assert!(description.contains("publish-like"));
-                assert!(
-                    approval_force_prompt,
-                    "publish-like YOLO prompts must bypass TUI auto-approval"
-                );
-                handle_for_approval
-                    .deny_tool_call(id)
-                    .await
-                    .expect("deny publish-like shell");
-            }
-            Event::ToolCallComplete { name, result, .. } if name == "exec_shell" => {
-                let err = result.expect_err("publish-like shell should be denied");
-                assert!(
-                    err.to_string().contains("denied by user"),
-                    "unexpected shell result: {err:?}"
-                );
+            Event::ApprovalRequired { .. } => {
+                saw_approval_prompt = true;
             }
             Event::TurnComplete { status, .. } => {
                 assert_eq!(status, TurnOutcomeStatus::Completed);
+                saw_complete = true;
                 break;
             }
             _ => {}
@@ -2867,7 +2840,151 @@ async fn yolo_mode_forces_prompt_for_publish_like_shell() {
 
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     run_task.await.expect("engine task");
-    assert!(saw_forced_approval);
+    assert!(
+        !saw_approval_prompt,
+        "YOLO must run publish-like shell with zero prompts (#3790)"
+    );
+    assert!(saw_complete, "the YOLO publish-like turn should complete");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn yolo_mode_does_not_prompt_for_mcp_action() {
+    // #3790: MCP mutations are governed by the selected mode, just like shell.
+    // YOLO must not emit an approval request for a non-read-only MCP tool; this
+    // fixture has no GitHub MCP server, so execution may fail after the no-prompt
+    // planning decision. The regression guard is the absence of ApprovalRequired.
+    use wiremock::matchers::{body_string_contains, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let _lock = lock_test_env();
+    let workspace = tempdir().expect("tempdir");
+    let server = MockServer::start().await;
+
+    let tool_call_sse = concat!(
+        "data: {\"id\":\"chatcmpl-mcp\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[",
+        "{\"index\":0,\"id\":\"call_mcp\",\"type\":\"function\",\"function\":{\"name\":\"mcp_github_create_pull_request\",",
+        "\"arguments\":\"{\\\"title\\\":\\\"test\\\",\\\"body\\\":\\\"body\\\"}\"}}",
+        "]},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-mcp\",\"choices\":[{\"index\":0,\"delta\":{},",
+        "\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let done_sse = concat!(
+        "data: {\"id\":\"chatcmpl-done\",\"choices\":[{\"index\":0,",
+        "\"delta\":{\"content\":\"ack\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-done\",\"choices\":[{\"index\":0,\"delta\":{},",
+        "\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("MCP tool failed"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(done_sse),
+        )
+        .expect(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(tool_call_sse),
+        )
+        .expect(1)
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    let api_config = Config {
+        api_key: Some("test-key".to_string()),
+        base_url: Some(server.uri()),
+        ..Config::default()
+    };
+    let (engine, handle) = Engine::new(
+        EngineConfig {
+            model: crate::config::DEFAULT_TEXT_MODEL.to_string(),
+            workspace: workspace.path().to_path_buf(),
+            snapshots_enabled: false,
+            subagents_enabled: false,
+            ..EngineConfig::default()
+        },
+        &api_config,
+    );
+    let run_task = tokio::spawn(engine.run());
+
+    handle
+        .send(Op::SendMessage {
+            content: "please open the PR".to_string(),
+            mode: AppMode::Yolo,
+            provider: None,
+            model: crate::config::DEFAULT_TEXT_MODEL.to_string(),
+            goal_objective: None,
+            goal_token_budget: None,
+            goal_status: crate::tools::goal::GoalStatus::Active,
+            reasoning_effort: None,
+            reasoning_effort_auto: false,
+            auto_model: false,
+            allow_shell: true,
+            trust_mode: true,
+            auto_approve: true,
+            approval_mode: crate::tui::approval::ApprovalMode::Bypass,
+            translation_enabled: false,
+            show_thinking: true,
+            allowed_tools: None,
+            dynamic_tools: Vec::new(),
+            hook_executor: None,
+            verbosity: None,
+            provenance: UserInputProvenance::ExternalUser,
+        })
+        .await
+        .expect("send model turn");
+
+    let mut saw_mcp_result = false;
+    let mut saw_complete = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for engine event")
+    {
+        match event {
+            Event::ApprovalRequired { .. } => {
+                panic!("YOLO mode must not prompt for an MCP action");
+            }
+            Event::ToolCallComplete { name, result, .. }
+                if name == "mcp_github_create_pull_request" =>
+            {
+                saw_mcp_result = true;
+                let err = result
+                    .expect_err("unconfigured MCP server should fail after no-prompt planning");
+                assert!(
+                    err.to_string().contains("MCP tool failed"),
+                    "unexpected MCP error: {err:?}"
+                );
+            }
+            Event::TurnComplete { status, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Completed);
+                saw_complete = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    run_task.await.expect("engine task");
+    assert!(
+        saw_mcp_result,
+        "the MCP tool should execute without an approval gate"
+    );
+    assert!(saw_complete, "the YOLO MCP turn should complete");
 }
 
 #[tokio::test]

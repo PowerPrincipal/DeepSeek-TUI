@@ -1145,12 +1145,17 @@ impl Engine {
                     .await;
 
                 match self.await_tool_approval(&tool_id).await {
-                    Ok(ApprovalResult::Approved) => {
+                    Ok(approval @ (ApprovalResult::Approved | ApprovalResult::ApprovedByMode)) => {
+                        // #3790: a `!`-command can be auto-approved by the active
+                        // mode (e.g. YOLO) rather than by an individual click;
+                        // stamp it honestly so the model is not told the user
+                        // approved a call they were never prompted for.
+                        let by_mode = matches!(approval, ApprovalResult::ApprovedByMode);
                         emit_tool_audit(json!({
                             "event": "tool.approval_decision",
                             "tool_id": tool_id.clone(),
                             "tool_name": tool_name.clone(),
-                            "decision": "approved",
+                            "decision": if by_mode { "auto_approved_by_mode" } else { "approved" },
                             "source": "composer_bang",
                         }));
                         let mut result = Self::execute_tool_with_lock(
@@ -1169,7 +1174,11 @@ impl Engine {
                         if let Ok(tool_result) = result.as_mut() {
                             stamp_tool_result_approval(
                                 tool_result,
-                                ToolApprovalStamp::ApprovedByUser,
+                                if by_mode {
+                                    ToolApprovalStamp::AutoApprovedByMode
+                                } else {
+                                    ToolApprovalStamp::ApprovedByUser
+                                },
                             );
                         }
                         result
@@ -3801,6 +3810,10 @@ impl MockEngineHandle {
     pub(crate) async fn recv_approval_event(&mut self) -> Option<MockApprovalEvent> {
         match self.rx_approval.recv().await? {
             ApprovalDecision::Approved { id } => Some(MockApprovalEvent::Approved { id }),
+            // #3790: a mode auto-approval surfaces as Approved to the mock
+            // recorder; tests assert the honest "auto-approved by mode" note on
+            // the tool result itself rather than on this channel event.
+            ApprovalDecision::ApprovedByMode { id } => Some(MockApprovalEvent::Approved { id }),
             ApprovalDecision::Denied { id } => Some(MockApprovalEvent::Denied { id }),
             ApprovalDecision::RetryWithPolicy { id, policy } => {
                 Some(MockApprovalEvent::RetryWithPolicy { id, policy })
