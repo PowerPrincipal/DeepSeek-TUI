@@ -285,6 +285,25 @@ code.inline {
   to { transform: translateX(-50%); }
 }
 
+/* ---------- terminal player caret ---------- */
+.tp-caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: var(--indigo);
+  animation: tp-blink 1.06s steps(1, end) infinite;
+}
+@keyframes tp-blink {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tp-caret { animation: none; }
+  .ticker-track { animation: none; }
+}
+
 /* ---------- decorative big CJK in margin ---------- */
 .margin-glyph {
   font-family: "Noto Serif SC", serif;
