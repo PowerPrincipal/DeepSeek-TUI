@@ -3509,6 +3509,312 @@ fn plan_mode_registry_can_expose_agent_launcher_without_shell_tools() {
 }
 
 #[test]
+fn mode_invariant_matrix_covers_context_catalog_subagents_and_prompt_metadata() {
+    use crate::sandbox::SandboxPolicy;
+    use crate::tui::approval::ApprovalMode;
+    use crate::worker_profile::ShellPolicy;
+
+    #[derive(Clone, Copy)]
+    enum ExpectedSandbox {
+        ReadOnly,
+        WorkspaceWrite,
+        DangerFullAccess,
+    }
+
+    struct ModeCase {
+        name: &'static str,
+        mode: AppMode,
+        setting: &'static str,
+        prompt_marker: &'static str,
+        shell_policy: ShellPolicy,
+        sandbox: ExpectedSandbox,
+        trust_mode: bool,
+        auto_approve: bool,
+        approval_mode: ApprovalMode,
+        exec_shell_available: bool,
+        plan_hint: bool,
+    }
+
+    let cases = [
+        ModeCase {
+            name: "plan",
+            mode: AppMode::Plan,
+            setting: "plan",
+            prompt_marker: "##### Mode: Plan",
+            shell_policy: ShellPolicy::None,
+            sandbox: ExpectedSandbox::ReadOnly,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Suggest,
+            exec_shell_available: false,
+            plan_hint: true,
+        },
+        ModeCase {
+            name: "agent",
+            mode: AppMode::Agent,
+            setting: "agent",
+            prompt_marker: "##### Mode: Agent",
+            shell_policy: ShellPolicy::Full,
+            sandbox: ExpectedSandbox::WorkspaceWrite,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Suggest,
+            exec_shell_available: true,
+            plan_hint: false,
+        },
+        ModeCase {
+            name: "auto-compat",
+            mode: AppMode::Auto,
+            setting: "agent",
+            prompt_marker: "##### Mode: Agent",
+            shell_policy: ShellPolicy::Full,
+            sandbox: ExpectedSandbox::WorkspaceWrite,
+            trust_mode: false,
+            auto_approve: false,
+            approval_mode: ApprovalMode::Suggest,
+            exec_shell_available: true,
+            plan_hint: false,
+        },
+        ModeCase {
+            name: "yolo",
+            mode: AppMode::Yolo,
+            setting: "yolo",
+            prompt_marker: "##### Mode: YOLO",
+            shell_policy: ShellPolicy::Full,
+            sandbox: ExpectedSandbox::DangerFullAccess,
+            trust_mode: true,
+            auto_approve: true,
+            approval_mode: ApprovalMode::Bypass,
+            exec_shell_available: true,
+            plan_hint: false,
+        },
+    ];
+
+    for case in cases {
+        let tmp = tempdir().expect("tempdir");
+        let config = EngineConfig {
+            workspace: tmp.path().to_path_buf(),
+            allow_shell: true,
+            trust_mode: case.trust_mode,
+            ..EngineConfig::default()
+        };
+        let (mut engine, _handle) = Engine::new(config, &Config::default());
+        engine.current_mode = case.mode;
+        engine.session.allow_shell = true;
+        engine.session.trust_mode = case.trust_mode;
+        engine.session.auto_approve = case.auto_approve;
+        engine.session.approval_mode = case.approval_mode;
+
+        let policy = effective_input_policy(
+            UserInputProvenance::ExternalUser,
+            case.mode,
+            "continue",
+            engine.session.allow_shell,
+            engine.session.trust_mode,
+            engine.session.auto_approve,
+            engine.session.approval_mode,
+        );
+        assert_eq!(policy.mode, case.mode, "{}", case.name);
+        assert_eq!(policy.trust_mode, case.trust_mode, "{}", case.name);
+        assert_eq!(policy.auto_approve, case.auto_approve, "{}", case.name);
+        assert_eq!(policy.approval_mode, case.approval_mode, "{}", case.name);
+        assert!(policy.allow_shell, "{}", case.name);
+
+        let context = engine.build_tool_context(case.mode, false);
+        assert_eq!(context.shell_policy, case.shell_policy, "{}", case.name);
+        assert_eq!(context.trust_mode, case.trust_mode, "{}", case.name);
+        assert_eq!(context.auto_approve, case.auto_approve, "{}", case.name);
+        assert_eq!(
+            context.shell_network_denied_hint.is_some(),
+            case.plan_hint,
+            "{}",
+            case.name
+        );
+        let sandbox = context
+            .elevated_sandbox_policy
+            .as_ref()
+            .expect("mode context should always carry an elevated sandbox policy");
+        match (case.sandbox, sandbox) {
+            (ExpectedSandbox::ReadOnly, SandboxPolicy::ReadOnly) => {}
+            (
+                ExpectedSandbox::WorkspaceWrite,
+                SandboxPolicy::WorkspaceWrite {
+                    writable_roots,
+                    network_access,
+                    ..
+                },
+            ) => {
+                assert_eq!(
+                    writable_roots,
+                    &vec![tmp.path().to_path_buf()],
+                    "{}",
+                    case.name
+                );
+                assert!(*network_access, "{}", case.name);
+            }
+            (ExpectedSandbox::DangerFullAccess, SandboxPolicy::DangerFullAccess) => {}
+            _ => panic!("{}: unexpected sandbox policy {sandbox:?}", case.name),
+        }
+
+        let client = DeepSeekClient::new(&Config {
+            api_key: Some("test-key".to_string()),
+            ..Config::default()
+        })
+        .expect("stub client");
+        let manager =
+            crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
+        let mut runtime = SubAgentRuntime::new(
+            client,
+            DEFAULT_TEXT_MODEL.to_string(),
+            context.clone(),
+            false,
+            None,
+            manager.clone(),
+        )
+        .with_agent_tool_surface_options(
+            engine.agent_tool_surface_options(shell_policy_for_mode(case.mode, true)),
+        );
+        runtime.worker_profile = WorkerRuntimeProfile::for_role(match case.mode {
+            AppMode::Plan => SubAgentType::Plan,
+            _ => SubAgentType::General,
+        });
+
+        let registry = engine
+            .build_turn_tool_registry_builder(
+                case.mode,
+                engine.config.todos.clone(),
+                engine.config.plan_state.clone(),
+            )
+            .with_subagent_tools(manager, runtime)
+            .build(context);
+        assert!(registry.contains("agent"), "{}", case.name);
+        assert_eq!(
+            registry.contains("exec_shell"),
+            case.exec_shell_available,
+            "{}",
+            case.name
+        );
+
+        let msg = engine.user_text_message_with_turn_metadata_for_route(
+            "check current policy".to_string(),
+            DEFAULT_TEXT_MODEL,
+            false,
+            None,
+            false,
+        );
+        let metadata = msg.content.last().expect("turn metadata block");
+        let ContentBlock::Text { text, .. } = metadata else {
+            panic!("{}: expected text metadata block", case.name);
+        };
+        assert!(
+            text.contains(&format!("Current mode: {}", case.setting)),
+            "{}: {text}",
+            case.name
+        );
+        assert!(
+            text.contains(case.prompt_marker),
+            "{}: missing {} in metadata",
+            case.name,
+            case.prompt_marker
+        );
+    }
+}
+
+#[test]
+fn mode_invariant_matrix_covers_provenance_authority_narrowing() {
+    use crate::tui::approval::ApprovalMode;
+
+    struct ProvenanceCase {
+        name: &'static str,
+        provenance: UserInputProvenance,
+        expected_mode: AppMode,
+        expected_trust: bool,
+        expected_auto: bool,
+        expected_approval: ApprovalMode,
+        expect_status: bool,
+    }
+
+    let cases = [
+        ProvenanceCase {
+            name: "external user",
+            provenance: UserInputProvenance::ExternalUser,
+            expected_mode: AppMode::Yolo,
+            expected_trust: true,
+            expected_auto: true,
+            expected_approval: ApprovalMode::Bypass,
+            expect_status: false,
+        },
+        ProvenanceCase {
+            name: "runtime continuation",
+            provenance: UserInputProvenance::Runtime,
+            expected_mode: AppMode::Yolo,
+            expected_trust: true,
+            expected_auto: true,
+            expected_approval: ApprovalMode::Bypass,
+            expect_status: false,
+        },
+        ProvenanceCase {
+            name: "sub-agent handoff",
+            provenance: UserInputProvenance::SubAgentHandoff,
+            expected_mode: AppMode::Yolo,
+            expected_trust: true,
+            expected_auto: true,
+            expected_approval: ApprovalMode::Bypass,
+            expect_status: false,
+        },
+        ProvenanceCase {
+            name: "imported transcript",
+            provenance: UserInputProvenance::ImportedTranscript,
+            expected_mode: AppMode::Agent,
+            expected_trust: false,
+            expected_auto: false,
+            expected_approval: ApprovalMode::Suggest,
+            expect_status: true,
+        },
+        ProvenanceCase {
+            name: "memory recall",
+            provenance: UserInputProvenance::MemoryRecall,
+            expected_mode: AppMode::Agent,
+            expected_trust: false,
+            expected_auto: false,
+            expected_approval: ApprovalMode::Suggest,
+            expect_status: true,
+        },
+        ProvenanceCase {
+            name: "assistant generated",
+            provenance: UserInputProvenance::AssistantGenerated,
+            expected_mode: AppMode::Agent,
+            expected_trust: false,
+            expected_auto: false,
+            expected_approval: ApprovalMode::Suggest,
+            expect_status: true,
+        },
+    ];
+
+    for case in cases {
+        let policy = effective_input_policy(
+            case.provenance,
+            AppMode::Yolo,
+            "continue",
+            true,
+            true,
+            true,
+            ApprovalMode::Bypass,
+        );
+        assert_eq!(policy.mode, case.expected_mode, "{}", case.name);
+        assert_eq!(policy.trust_mode, case.expected_trust, "{}", case.name);
+        assert_eq!(policy.auto_approve, case.expected_auto, "{}", case.name);
+        assert_eq!(
+            policy.approval_mode, case.expected_approval,
+            "{}",
+            case.name
+        );
+        assert!(policy.allow_shell, "{}", case.name);
+        assert_eq!(policy.status.is_some(), case.expect_status, "{}", case.name);
+    }
+}
+
+#[test]
 fn agent_mode_can_build_auto_approved_tool_context() {
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
 
