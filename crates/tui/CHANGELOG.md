@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The model you select in `/model` is now the operator: fleet workers whose
+  task spec and roster profile pin no model inherit the active session route
+  instead of a hardcoded `auto` sentinel, matching the pinned operator row in
+  `/fleet roster`. Task-level and profile model overrides still win, and
+  route receipts record which source applied (`task.model`,
+  `agent_profile.model`, or `run.model`).
+- Added the `/workflow` command (aliases `/workflows`, `/wf`) as the user
+  opt-in to workflow orchestration. Bare `/workflow` orchestrates the current
+  work — the model synthesizes the objective from the conversation context;
+  `/workflow <objective>` narrows the run; `/workflow status [run_id]` and
+  `/workflow cancel <run_id>` relay typed run receipts without starting new
+  runs.
+- Bare `/goal` with no active goal now declares a goal from the conversation
+  context via `create_goal` instead of printing usage; with an active goal it
+  remains the status readout, and explicit `/goal <objective>` is unchanged.
 - Added the constitution-first setup wizard: a unified `/setup` shell with
   resume, back navigation, and skip-retry state; provider/model readiness
   cards with a custom-provider form and provider-picker detail layout; a
@@ -113,6 +128,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now records a `finished_at` instant that both sidebar render paths and the
   engine snapshot clamp elapsed against; `/goal resume` clears the freeze and
   the timer ticks again.
+- Fixed paused goals silently un-freezing their sidebar timer: usage keeps
+  accruing while paused, and the next goal snapshot used to clear the frozen
+  instant. Paused goals now stay frozen until an explicit resume.
+- Fixed a scheduled-automation race where deleting an automation while its
+  run was being enqueued left the already-created task running untracked;
+  the run record is now persisted unconditionally.
+- Removed `panic = "abort"` from the release profile: it disabled unwinding
+  and broke the panic supervision that keeps one failing tool call from
+  taking down the whole session. The `lto`/`strip`/`codegen-units` size and
+  speed tuning is unchanged.
 - Fixed session save/load to persist and restore the active model provider
   across restarts. Previously sessions created under one provider (e.g.
   DeepSeek) would silently load under a different active provider. Provider,
