@@ -218,6 +218,7 @@ struct SetupRuntimeFacts {
     remote_bridges_result: String,
     remote_providers_result: String,
     remote_mode_result: String,
+    remote_command_provider: String,
     remote_result: String,
     persistence: SetupPersistenceFacts,
     default_mode: String,
@@ -265,6 +266,7 @@ impl Default for SetupRuntimeFacts {
             remote_bridges_result: "remote bridge registry not loaded".to_string(),
             remote_providers_result: "provider registry not loaded".to_string(),
             remote_mode_result: "remote setup mode not loaded".to_string(),
+            remote_command_provider: "deepseek".to_string(),
             remote_result: "remote runtime not loaded".to_string(),
             persistence: SetupPersistenceFacts::default(),
             default_mode: "agent".to_string(),
@@ -471,6 +473,7 @@ impl SetupRuntimeFacts {
             remote_bridges_result: remote.bridges_result,
             remote_providers_result: remote.providers_result,
             remote_mode_result: remote.mode_result,
+            remote_command_provider: remote.command_provider,
             remote_result: remote.result,
             persistence,
             default_mode: app.mode.as_setting().to_string(),
@@ -3594,6 +3597,7 @@ fn remote_runtime_on_ramp_text(locale: Locale, facts: &SetupRuntimeFacts) -> Str
         &facts.remote_bridges_result,
         &facts.remote_providers_result,
         &facts.remote_mode_result,
+        &facts.remote_command_provider,
     )
 }
 
@@ -4735,6 +4739,35 @@ mod tests {
         assert!(content.contains("does not generate bundles"));
         assert!(content.contains("codewhale remote-setup --generate-only"));
         assert!(content.contains("`--apply` remains unimplemented"));
+    }
+
+    #[test]
+    fn remote_runtime_on_ramp_command_uses_active_provider() {
+        let _guard = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace dir");
+        let codewhale_home = tmp.path().join(".codewhale");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path());
+        let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", tmp.path());
+        let _codewhale_home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
+        let config = Config {
+            provider: Some("openrouter".to_string()),
+            ..Config::default()
+        };
+        let app = App::new(setup_test_options(workspace), &config);
+        let facts = SetupRuntimeFacts::from_app_config(&app, &config);
+
+        let content = remote_runtime_on_ramp_text(Locale::En, &facts);
+
+        assert!(content.contains("--provider openrouter"), "{content}");
+        assert!(!content.contains("--provider deepseek"), "{content}");
+        assert!(content.contains("does not generate bundles"), "{content}");
+        assert!(
+            content.contains("`--apply` remains unimplemented"),
+            "{content}"
+        );
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub(super) struct SetupRemoteFacts {
     pub(super) bridges_result: String,
     pub(super) providers_result: String,
     pub(super) mode_result: String,
+    pub(super) command_provider: String,
     pub(super) result: String,
 }
 
@@ -21,6 +22,9 @@ impl SetupRemoteFacts {
             .map(|bridge| bridge.slug)
             .collect::<Vec<_>>();
         let provider_count = codewhale_config::ProviderKind::all().len();
+        let command_provider =
+            crate::remote_setup::bundle::ProviderInfo::from_slug(app.api_provider.as_str())
+                .map_or_else(|| "deepseek".to_string(), |provider| provider.slug);
 
         Self {
             clouds_result: format!(
@@ -43,6 +47,7 @@ impl SetupRemoteFacts {
                 crate::remote_setup::bundle::DEFAULT_PORT,
                 crate::remote_setup::bundle::DEFAULT_WORKERS
             ),
+            command_provider,
             result: format!(
                 "clouds={}, bridges={}, providers={}, mode=generate_only, apply=not_implemented",
                 cloud_slugs.len(),
@@ -59,8 +64,11 @@ pub(super) fn on_ramp_text(
     bridges_result: &str,
     providers_result: &str,
     mode_result: &str,
+    command_provider: &str,
 ) -> String {
-    let command = "codewhale remote-setup --generate-only --cloud lighthouse --bridge telegram --provider deepseek --out ./codewhale-deploy/lighthouse-telegram";
+    let command = format!(
+        "codewhale remote-setup --generate-only --cloud lighthouse --bridge telegram --provider {command_provider} --out ./codewhale-deploy/lighthouse-telegram"
+    );
     match locale {
         Locale::Ja => format!(
             "Remote Runtime On-Ramp\n\n\
