@@ -1688,22 +1688,30 @@ impl ProviderPickerView {
         } else {
             "/provider"
         };
-        let hint = if codex_oauth {
-            format!(
-                "Run `codex login`, or set {} / CODEX_ACCESS_TOKEN and re-open {reopen_command}.",
-                self.env_var_for_selected_row(),
-            )
+        let mut hint_lines = if codex_oauth {
+            vec![Line::from(Span::styled(
+                format!(
+                    "Run `codex login`, or set {} / CODEX_ACCESS_TOKEN and re-open {reopen_command}.",
+                    self.env_var_for_selected_row(),
+                ),
+                Style::default().fg(palette::TEXT_MUTED),
+            ))]
         } else {
-            format!(
-                "Or set the {} environment variable and re-open {reopen_command}.",
-                self.env_var_for_selected_row(),
-            )
+            vec![Line::from(Span::styled(
+                format!(
+                    "Or set the {} environment variable and re-open {reopen_command}.",
+                    self.env_var_for_selected_row(),
+                ),
+                Style::default().fg(palette::TEXT_MUTED),
+            ))]
         };
-        Paragraph::new(Line::from(Span::styled(
-            hint,
-            Style::default().fg(palette::TEXT_MUTED),
-        )))
-        .render(layout[1], buf);
+        if !codex_oauth && let Some(url) = row.provider.credential_url() {
+            hint_lines.push(Line::from(Span::styled(
+                format!("Credentials: {url}"),
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        };
+        Paragraph::new(hint_lines).render(layout[1], buf);
     }
 
     fn render_custom_form(&self, area: Rect, buf: &mut Buffer) {
@@ -2378,6 +2386,19 @@ mod tests {
             ProviderPickerView::env_var_for(ApiProvider::NvidiaNim),
             "NVIDIA_API_KEY / NVIDIA_NIM_API_KEY / DEEPSEEK_API_KEY"
         );
+    }
+
+    #[test]
+    fn key_entry_hint_includes_provider_credential_url() {
+        let config = Config::default();
+        let mut picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
+        move_to_provider(&mut picker, ApiProvider::NvidiaNim);
+        picker.handle_key(key(KeyCode::Enter));
+
+        let rendered = render_text(&picker, 120, 20);
+
+        assert!(rendered.contains("NVIDIA_API_KEY / NVIDIA_NIM_API_KEY / DEEPSEEK_API_KEY"));
+        assert!(rendered.contains("https://build.nvidia.com/settings/api-keys"));
     }
 
     #[test]
@@ -3186,6 +3207,8 @@ mod tests {
 
     #[test]
     fn setup_catalog_focuses_missing_provider_key_entry() {
+        let _lock = crate::test_support::lock_test_env();
+        let _anthropic_key = crate::test_support::EnvVarGuard::remove("ANTHROPIC_API_KEY");
         let config = Config::default();
         let picker = ProviderPickerView::new_for_setup(
             ApiProvider::Deepseek,
@@ -3356,6 +3379,7 @@ mod tests {
         assert!(rendered.contains("no token is stored here"));
         assert!(!rendered.contains("save & switch"));
         assert!(!rendered.contains("(paste key here)"));
+        assert!(!rendered.contains("Credentials:"));
 
         assert!(picker.handle_paste("codex-token"));
         for c in "codex-token".chars() {
