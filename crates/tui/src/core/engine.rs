@@ -2032,6 +2032,9 @@ impl Engine {
         if let Some(working_set_summary) = working_set_summary {
             lines.push(working_set_summary);
         }
+        if let Some(git_snapshot) = crate::tui::workspace_context::collect(&self.config.workspace) {
+            lines.push(format!("Git workspace: {git_snapshot}"));
+        }
         let summary = lines.join("\n");
 
         ContentBlock::Text {

@@ -4902,6 +4902,39 @@ fn working_set_reaches_model_as_turn_metadata() {
 }
 
 #[test]
+fn turn_metadata_includes_git_workspace_snapshot_in_repo() {
+    use crate::dependencies::ExternalTool;
+
+    if !crate::dependencies::Git::available() {
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let init = crate::dependencies::Git::output(&["init", "-q"], root);
+    if init.is_err() || !init.unwrap().status.success() {
+        return;
+    }
+
+    let config = EngineConfig {
+        workspace: root.to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+    let user_msg = engine.user_text_message_with_turn_metadata("inspect repo state".to_string());
+    let last_block = user_msg.content.last().expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = last_block else {
+        panic!("expected text metadata block");
+    };
+
+    if let Some(snapshot) = crate::tui::workspace_context::collect(root) {
+        assert!(
+            text.contains(&format!("Git workspace: {snapshot}")),
+            "turn_meta should include git snapshot: {text}"
+        );
+    }
+}
+
+#[test]
 fn turn_metadata_includes_current_local_date_without_working_set() {
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
