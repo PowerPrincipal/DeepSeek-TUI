@@ -217,6 +217,7 @@
     "CmdTokensContextWithWindow": "~{used} / {window} ({percent}%)",
     "FooterAgentSingular": "1 エージェント",
     "FooterAgentsPlural": "{count} エージェント",
+    "HeaderAgentsChip": "エージェント {count}",
     "FooterPressCtrlCAgain": "もう一度 Ctrl+C で終了",
     "FooterWorking": "処理中",
     "FooterBalancePrefix": "残高",

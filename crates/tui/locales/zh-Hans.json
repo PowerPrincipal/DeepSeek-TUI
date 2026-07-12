@@ -217,6 +217,7 @@
     "CmdTokensContextWithWindow": "~{used} / {window}（{percent}%）",
     "FooterAgentSingular": "1 个子代理",
     "FooterAgentsPlural": "{count} 个子代理",
+    "HeaderAgentsChip": "子代理 {count}",
     "FooterPressCtrlCAgain": "再次按 Ctrl+C 退出",
     "FooterWorking": "工作中",
     "FooterBalancePrefix": "余额",

@@ -217,6 +217,7 @@
     "CmdTokensContextWithWindow": "~{used} / {window} ({percent}%)",
     "FooterAgentSingular": "1 sub-agente",
     "FooterAgentsPlural": "{count} sub-agentes",
+    "HeaderAgentsChip": "sub-agentes {count}",
     "FooterPressCtrlCAgain": "Presiona Ctrl+C de nuevo para salir",
     "FooterWorking": "trabajando",
     "FooterBalancePrefix": "saldo",

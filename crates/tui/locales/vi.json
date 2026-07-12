@@ -217,6 +217,7 @@
     "CmdTokensContextWithWindow": "~{used} / {window} ({percent}%)",
     "FooterAgentSingular": "1 tác nhân",
     "FooterAgentsPlural": "{count} tác nhân",
+    "HeaderAgentsChip": "tác nhân {count}",
     "FooterPressCtrlCAgain": "Nhấn Ctrl+C một lần nữa để thoát",
     "FooterWorking": "đang xử lý",
     "FooterBalancePrefix": "số dư",

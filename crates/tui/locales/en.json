@@ -217,6 +217,7 @@
     "CmdTokensContextWithWindow": "~{used} / {window} ({percent}%)",
     "FooterAgentSingular": "1 agent",
     "FooterAgentsPlural": "{count} agents",
+    "HeaderAgentsChip": "agents {count}",
     "FooterPressCtrlCAgain": "Press Ctrl+C again to quit",
     "FooterWorking": "working",
     "FooterBalancePrefix": "balance",

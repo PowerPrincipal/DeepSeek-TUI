@@ -579,7 +579,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     let mut right = Vec::new();
     if tier == ShellTier::Wide && running_agents > 0 {
         right.push(Span::styled(
-            tr(app.ui_locale, MessageId::FooterAgentsPlural)
+            tr(app.ui_locale, MessageId::HeaderAgentsChip)
                 .replace("{count}", &running_agents.to_string()),
             Style::default().fg(app.ui_theme.text_muted),
         ));
