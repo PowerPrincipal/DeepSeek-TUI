@@ -6,6 +6,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::localization::MessageId;
+use crate::models::{ContentBlock, Message};
 use crate::tui::app::{App, SidebarRowAction};
 use crate::tui::command_palette::{
     CommandPaletteView, build_entries as build_command_palette_entries,
@@ -765,35 +766,7 @@ fn open_agent_chat_pager(app: &mut App, agent_id: &str) -> bool {
         },
         Err(_) => return false,
     };
-    let Some(messages) = payload
-        .get("messages")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return false;
-    };
-
-    let omitted = payload
-        .get("omitted_messages")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or_default();
-    let mut text = String::new();
-    if omitted > 0 {
-        text.push_str(&format!(
-            "{omitted} earlier messages were retained in the worker checkpoint but are not available in this live session.\n\n"
-        ));
-    }
-    for message in messages {
-        let role = message
-            .get("role")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("message");
-        let content = message.get("content").cloned().unwrap_or_default();
-        text.push_str(&format!("── {role} ──\n"));
-        text.push_str(
-            &serde_json::to_string_pretty(&content).unwrap_or_else(|_| content.to_string()),
-        );
-        text.push_str("\n\n");
-    }
+    let text = agent_transcript_text(&payload);
     if text.trim().is_empty() {
         return false;
     }
@@ -808,6 +781,93 @@ fn open_agent_chat_pager(app: &mut App, agent_id: &str) -> bool {
         width.saturating_sub(2),
     ));
     true
+}
+
+/// Turn the agent transcript handle into a readable conversation. The worker
+/// may retain tool calls and results, but private model thinking never appears
+/// here; the parent transcript has the same default privacy behavior.
+fn agent_transcript_text(payload: &serde_json::Value) -> String {
+    let Some(messages) = payload
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return String::new();
+    };
+
+    let omitted = payload
+        .get("omitted_messages")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    let total = payload
+        .get("message_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(messages.len() as u64);
+    let mut text = String::new();
+    if omitted > 0 {
+        text.push_str(&format!(
+            "Showing the latest {} of {total} worker messages. Earlier messages were omitted from the in-memory transcript.\n\n",
+            messages.len()
+        ));
+    }
+
+    for raw in messages {
+        let Ok(message) = serde_json::from_value::<Message>(raw.clone()) else {
+            continue;
+        };
+        let body = agent_message_text(&message);
+        if body.trim().is_empty() {
+            continue;
+        }
+        text.push_str(&format!("── {} ──\n{body}\n\n", message.role));
+    }
+    text
+}
+
+fn agent_message_text(message: &Message) -> String {
+    let mut text = String::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text: body, .. } => {
+                if !body.trim().is_empty() {
+                    text.push_str(body);
+                    text.push('\n');
+                }
+            }
+            ContentBlock::ToolUse { name, input, .. }
+            | ContentBlock::ServerToolUse { name, input, .. } => {
+                text.push_str(&format!(
+                    "→ {name}\n{}\n",
+                    serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string())
+                ));
+            }
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } => {
+                let label = if is_error.unwrap_or(false) {
+                    "← tool error"
+                } else {
+                    "← tool result"
+                };
+                text.push_str(&format!("{label} ({tool_use_id})\n{content}\n"));
+            }
+            ContentBlock::ImageUrl { image_url } => {
+                text.push_str(&format!("[image: {}]\n", image_url.url));
+            }
+            // Thinking blocks are deliberately not surfaced in the main TUI
+            // and should not leak through a worker detail view either.
+            ContentBlock::Thinking { .. } => {}
+            other => {
+                text.push_str(&format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(other).unwrap_or_else(|_| "[worker event]".into())
+                ));
+            }
+        }
+    }
+    text.trim_end().to_string()
 }
 
 pub(crate) fn mouse_hits_transcript_scrollbar(app: &App, mouse: MouseEvent) -> bool {
@@ -1410,7 +1470,7 @@ pub(crate) fn selection_to_text(app: &App) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_context_menu_entries, sidebar_click_action};
+    use super::{agent_transcript_text, build_context_menu_entries, sidebar_click_action};
     use crate::config::Config;
     use crate::tui::app::{
         App, SidebarHoverRow, SidebarHoverSection, SidebarRowAction, TuiOptions,
@@ -1418,6 +1478,7 @@ mod tests {
     use crate::tui::views::ContextMenuAction;
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
+    use serde_json::json;
     use std::path::PathBuf;
 
     fn create_test_app() -> App {
@@ -1721,5 +1782,25 @@ mod tests {
         assert_eq!(sidebar_click_action(&app, left_click(65, 30)), None);
         // Inside the section but on an empty row without metadata.
         assert_eq!(sidebar_click_action(&app, left_click(65, 8)), None);
+    }
+
+    #[test]
+    fn worker_transcript_formats_visible_activity_without_thinking() {
+        let transcript = agent_transcript_text(&json!({
+            "message_count": 2,
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "Survey Harnesses", "cache_control": null}]},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "private chain of thought", "signature": null},
+                    {"type": "tool_use", "id": "call_1", "name": "list_dir", "input": {"path": "/tmp"}, "caller": null},
+                    {"type": "text", "text": "I found the workspace.", "cache_control": null}
+                ]}
+            ]
+        }));
+
+        assert!(transcript.contains("── user ──\nSurvey Harnesses"));
+        assert!(transcript.contains("→ list_dir"));
+        assert!(transcript.contains("I found the workspace."));
+        assert!(!transcript.contains("private chain of thought"));
     }
 }

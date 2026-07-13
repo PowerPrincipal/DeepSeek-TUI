@@ -747,23 +747,27 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     if tier != ShellTier::Compact && area.height >= 14 && area.width >= 28 {
         let mark = [
             vec![Span::styled(
-                "   ˚",
+                "           ˚",
                 Style::default().fg(app.ui_theme.accent_secondary),
             )],
             vec![Span::styled(
-                " ▗▄▄▄▄▄▄▄▄▄▄▄▄▄▖    ▚▞",
+                "        __/ \\__",
                 Style::default().fg(app.ui_theme.accent_primary),
             )],
             vec![
-                Span::styled("▐██", Style::default().fg(app.ui_theme.accent_primary)),
-                Span::styled("·", Style::default().fg(app.ui_theme.text_body)),
                 Span::styled(
-                    "████████████▙▄▄▄▞",
+                    "   ____/  ",
                     Style::default().fg(app.ui_theme.accent_primary),
                 ),
+                Span::styled("·", Style::default().fg(app.ui_theme.text_body)),
+                Span::styled("    `-.", Style::default().fg(app.ui_theme.accent_primary)),
             ],
             vec![Span::styled(
-                " ▝▀▀▀▀▀▀▀▀▀▀▀▀▀▘",
+                " <___             \\_",
+                Style::default().fg(app.ui_theme.accent_primary),
+            )],
+            vec![Span::styled(
+                "     `-.___..---'",
                 Style::default().fg(app.ui_theme.accent_primary),
             )],
         ];

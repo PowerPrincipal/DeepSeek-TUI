@@ -5637,6 +5637,42 @@ async fn insert_subagent_full_transcript_handle(
     store.insert_json(format!("agent:{agent_id}"), "full_transcript", payload)
 }
 
+/// Publish the inspectable worker transcript while a child is still running.
+///
+/// The sidebar's Open action is intentionally backed by the same
+/// `full_transcript` handle before and after completion. Keeping a separate
+/// live-only snapshot name meant Open could only show a compact status card
+/// until the worker stopped, which is exactly when observing it is least
+/// useful.
+async fn publish_live_subagent_transcript(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    agent_type: &SubAgentType,
+    assignment: &SubAgentAssignment,
+    result: Option<&String>,
+    checkpoint: Option<&SubAgentCheckpoint>,
+    messages: &[Message],
+    steps_taken: u32,
+    started_at: Instant,
+    fork_context: bool,
+) {
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    insert_subagent_full_transcript_handle(
+        runtime,
+        agent_id,
+        agent_type,
+        assignment,
+        &SubAgentStatus::Running,
+        result,
+        checkpoint,
+        messages,
+        steps_taken,
+        duration_ms,
+        fork_context,
+    )
+    .await;
+}
+
 /// Bound a sub-agent tool result before it enters `messages` (#3882).
 ///
 /// The root engine applies spillover in `turn_loop.rs`; the sub-agent loop
@@ -6061,6 +6097,23 @@ async fn run_subagent(
     // reporting a completed child with no payload.
     let mut stopped_naturally = false;
 
+    // A worker is inspectable as soon as it is launched, not only after its
+    // first model round trip. This gives Open a real conversation destination
+    // while the worker is waiting on the provider.
+    publish_live_subagent_transcript(
+        runtime,
+        &agent_id,
+        &agent_type,
+        &assignment,
+        None,
+        None,
+        &messages,
+        steps,
+        started_at,
+        fork_context_enabled,
+    )
+    .await;
+
     for _step in 0..max_steps {
         // Cooperative cancellation: bail if this session's token was cancelled
         // while we were between steps. Top-level model-visible sub-agents use
@@ -6189,6 +6242,19 @@ async fn run_subagent(
             )
             .await,
         );
+        publish_live_subagent_transcript(
+            runtime,
+            &agent_id,
+            &agent_type,
+            &assignment,
+            final_result.as_ref(),
+            latest_checkpoint.as_ref(),
+            &messages,
+            steps,
+            started_at,
+            fork_context_enabled,
+        )
+        .await;
 
         // Race the API call against the cancellation token so a parent
         // cancel during a long thinking turn doesn't have to wait for the
@@ -6444,6 +6510,19 @@ async fn run_subagent(
             )
             .await,
         );
+        publish_live_subagent_transcript(
+            runtime,
+            &agent_id,
+            &agent_type,
+            &assignment,
+            final_result.as_ref(),
+            latest_checkpoint.as_ref(),
+            &messages,
+            steps,
+            started_at,
+            fork_context_enabled,
+        )
+        .await;
 
         if response_was_truncated(&response) {
             final_result = None;
@@ -6480,6 +6559,19 @@ async fn run_subagent(
                 )
                 .await,
             );
+            publish_live_subagent_transcript(
+                runtime,
+                &agent_id,
+                &agent_type,
+                &assignment,
+                final_result.as_ref(),
+                latest_checkpoint.as_ref(),
+                &messages,
+                steps,
+                started_at,
+                fork_context_enabled,
+            )
+            .await;
             continue;
         }
         reset_truncated_subagent_responses(&mut consecutive_truncated_responses);
@@ -6508,6 +6600,19 @@ async fn run_subagent(
                     )
                     .await,
                 );
+                publish_live_subagent_transcript(
+                    runtime,
+                    &agent_id,
+                    &agent_type,
+                    &assignment,
+                    final_result.as_ref(),
+                    latest_checkpoint.as_ref(),
+                    &messages,
+                    steps,
+                    started_at,
+                    fork_context_enabled,
+                )
+                .await;
                 continue;
             }
             while let Ok(input) = input_rx.try_recv() {
@@ -6620,6 +6725,19 @@ async fn run_subagent(
                 )
                 .await,
             );
+            publish_live_subagent_transcript(
+                runtime,
+                &agent_id,
+                &agent_type,
+                &assignment,
+                final_result.as_ref(),
+                latest_checkpoint.as_ref(),
+                &messages,
+                steps,
+                started_at,
+                fork_context_enabled,
+            )
+            .await;
         }
     }
 

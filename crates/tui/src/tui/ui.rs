@@ -3666,19 +3666,22 @@ async fn run_event_loop(
             area.width >= crate::tui::ocean::AMBIENT_MIN_WIDTH
                 && area.height >= crate::tui::ocean::AMBIENT_MIN_HEIGHT
         });
-        let underwater_idle_motion = !app.low_motion
+        let underwater_ambient_motion = !app.low_motion
             && app.fancy_animations
             && app.ocean_treatment.supports_ambient_life()
             && (ombre_field_breathes || ambient_life_visible)
             && app.onboarding == OnboardingState::None
             && !app.attention_hold_active()
-            && app.history.is_empty()
-            && app.input.trim().is_empty()
-            && app
-                .active_cell
-                .as_ref()
-                .is_none_or(crate::tui::active_cell::ActiveCell::is_empty)
-            && !app.is_loading;
+            && (matches!(
+                crate::tui::underwater::ShellPhase::from_app(app),
+                crate::tui::underwater::ShellPhase::Working
+                    | crate::tui::underwater::ShellPhase::Verifying
+            ) || (app.history.is_empty()
+                && app
+                    .active_cell
+                    .as_ref()
+                    .is_none_or(crate::tui::active_cell::ActiveCell::is_empty)
+                && !app.is_loading));
         let underwater_completion_motion = !app.low_motion
             && app.fancy_animations
             && matches!(app.runtime_turn_status.as_deref(), Some("completed"))
@@ -3701,7 +3704,7 @@ async fn run_event_loop(
             app.fancy_animations,
             app.constrained_frame_rate,
         );
-        if (status_motion || underwater_idle_motion || underwater_completion_motion)
+        if (status_motion || underwater_ambient_motion || underwater_completion_motion)
             && last_status_frame.elapsed() >= Duration::from_millis(animation_interval_ms)
         {
             if streaming_thinking::animate_pending_translation(

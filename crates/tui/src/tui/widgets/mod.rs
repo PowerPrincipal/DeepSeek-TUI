@@ -111,17 +111,16 @@ impl ChatWidget {
             .filter(|elapsed| *elapsed < 800);
         let render_empty_state = should_render_empty_state(app);
         let phase = ShellPhase::from_app(app);
-        // Ambient phase animation is an empty-water affordance. Once real
-        // transcript work exists, keep the field stable so model text and
-        // receipts do not compete with a full-viewport repaint.
-        let ocean_animated = render_empty_state
-            && !app.low_motion
-            && app.fancy_animations
-            && !app.attention_hold_active()
-            && matches!(phase, ShellPhase::Idle | ShellPhase::Typing);
-        let fish_flee_elapsed_ms = render_empty_state
+        // Keep the water alive while a turn is doing work, even after the
+        // transcript exists. Previously motion was limited to a pristine
+        // empty composer, so typing or receiving the first message made the
+        // fish appear to die.
+        let underwater_motion_enabled =
+            !app.low_motion && app.fancy_animations && !app.attention_hold_active();
+        let ocean_animated = underwater_motion_enabled
+            && (render_empty_state || matches!(phase, ShellPhase::Working | ShellPhase::Verifying));
+        let fish_flee_elapsed_ms = underwater_motion_enabled
             .then_some(())
-            .filter(|_| !app.low_motion && app.fancy_animations && !app.attention_hold_active())
             .and(app.turn_started_at)
             .map(|started| started.elapsed().as_millis())
             .filter(|elapsed| *elapsed < 800)
@@ -154,8 +153,9 @@ impl ChatWidget {
                 ocean_phase: phase,
                 ocean_animated,
                 fish_flee_elapsed_ms,
-                ambient_life: app.input.trim().is_empty()
-                    && !app.attention_hold_active()
+                // Reduced-motion users still get the quiet, static scene;
+                // only movement itself is opt-in.
+                ambient_life: !app.attention_hold_active()
                     && matches!(
                         phase,
                         ShellPhase::Idle
@@ -494,7 +494,11 @@ impl ChatWidget {
             ocean_phase: phase,
             ocean_animated,
             fish_flee_elapsed_ms,
-            ambient_life: false,
+            // During an active turn, animate only in blank transcript cells.
+            // `render_ambient_life` collision-checks text, so this adds life
+            // without painting over messages or receipts.
+            ambient_life: !app.attention_hold_active()
+                && matches!(phase, ShellPhase::Working | ShellPhase::Verifying),
             scroll_track,
             scroll_thumb,
             jump_border,
@@ -1044,6 +1048,12 @@ impl Renderable for ComposerWidget<'_> {
         let input_rows_budget =
             composer_input_rows_budget(inner_area.height, menu_lines_for_budget);
         let content_width = usize::from(inner_area.width.max(1));
+        // Reserve a stable two-column gutter for the prompt. It used to
+        // vanish on the first keystroke, which made the composer look like it
+        // jumped or lagged before text appeared.
+        let prompt_inset =
+            usize::from(!self.app.is_history_search_active() && inner_area.width >= 3) * 2;
+        let input_content_width = content_width.saturating_sub(prompt_inset).max(1);
 
         // Use the extended version that also returns character indices to avoid
         // redundant wrapping when rendering text selections (issue #3909).
@@ -1051,7 +1061,7 @@ impl Renderable for ComposerWidget<'_> {
             layout_input_with_scroll_and_char_indices(
                 input_text,
                 input_cursor,
-                content_width,
+                input_content_width,
                 input_rows_budget,
             );
         let is_draft_mode = input_text.contains('\n') || visible_lines.len() > 1;
@@ -1217,7 +1227,7 @@ impl Renderable for ComposerWidget<'_> {
                 .collect();
             for (line_text, (line_start, line_end)) in visible_lines.iter().zip(line_ranges.iter())
             {
-                let spans = line_spans_with_selection(
+                let mut spans = line_spans_with_selection(
                     line_text,
                     *line_start,
                     *line_end,
@@ -1225,14 +1235,22 @@ impl Renderable for ComposerWidget<'_> {
                     sel_end,
                     self.app.ui_theme.selection_bg,
                 );
+                if prompt_inset > 0 {
+                    spans.insert(0, Span::raw("  "));
+                }
                 input_lines.push(Line::from(spans));
             }
         } else {
             for line in &visible_lines {
-                input_lines.push(Line::from(Span::styled(
+                let mut spans = Vec::new();
+                if prompt_inset > 0 {
+                    spans.push(Span::raw("  "));
+                }
+                spans.push(Span::styled(
                     line.clone(),
                     Style::default().fg(palette::TEXT_PRIMARY),
-                )));
+                ));
+                input_lines.push(Line::from(spans));
             }
         }
 
@@ -1248,7 +1266,7 @@ impl Renderable for ComposerWidget<'_> {
             } else {
                 Some(composer_empty_hint_text(self.app))
             };
-            empty_composer_visual_rows(hint.as_deref(), content_width, input_rows_budget)
+            empty_composer_visual_rows(hint.as_deref(), input_content_width, input_rows_budget)
         } else {
             input_lines.len()
         };
@@ -1521,15 +1539,16 @@ impl Renderable for ComposerWidget<'_> {
             .wrap(Wrap { trim: false });
         paragraph.render(inner_area, buf);
 
-        // The quiet composer needs one unmistakable focus anchor. Keep the
-        // reference's gold prompt only on a genuinely empty input row; once
-        // text exists, the text itself owns attention.
-        if input_text.is_empty()
-            && !self.app.is_history_search_active()
+        // The prompt is a persistent focus anchor, not empty-state chrome.
+        // Rendering it on every input row keeps the first character from
+        // causing a visible leftward jump.
+        if !self.app.is_history_search_active()
             && inner_area.width >= 3
             && let Some((cursor_x, cursor_y)) = self.cursor_pos(area)
         {
-            buf[(cursor_x.saturating_sub(2), cursor_y)]
+            let prompt_x = inner_area.x;
+            debug_assert!(cursor_x >= prompt_x.saturating_add(2));
+            buf[(prompt_x, cursor_y)]
                 .set_symbol("❯")
                 .set_style(Style::default().fg(self.app.ui_theme.accent_primary));
         }
@@ -1538,7 +1557,7 @@ impl Renderable for ComposerWidget<'_> {
     fn desired_height(&self, width: u16) -> u16 {
         composer_height(
             self.app.composer_display_input(),
-            width,
+            width.saturating_sub(2),
             self.max_height.min(self.max_height_cap()),
             self.active_menu_reserved_rows(),
             self.app.composer_density,
@@ -1551,13 +1570,20 @@ impl Renderable for ComposerWidget<'_> {
         let input_text = self.app.composer_display_input();
         let input_cursor = self.app.composer_display_cursor();
         let content_width = usize::from(inner_area.width.max(1));
+        let prompt_inset =
+            usize::from(!self.app.is_history_search_active() && inner_area.width >= 3) * 2;
+        let input_content_width = content_width.saturating_sub(prompt_inset).max(1);
         // Match the render path's locked-budget calculation so the cursor
         // lands on the same row the input is drawn on.
         let input_rows_budget =
             composer_input_rows_budget(inner_area.height, self.active_menu_reserved_rows());
 
-        let (visible_lines, cursor_row, cursor_col) =
-            layout_input(input_text, input_cursor, content_width, input_rows_budget);
+        let (visible_lines, cursor_row, cursor_col) = layout_input(
+            input_text,
+            input_cursor,
+            input_content_width,
+            input_rows_budget,
+        );
         let visual_rows = if input_text.is_empty() {
             let hint: Option<Cow<'_, str>> = if let Some(ref suggestion) =
                 self.app.prompt_suggestion
@@ -1567,19 +1593,17 @@ impl Renderable for ComposerWidget<'_> {
             } else {
                 Some(composer_empty_hint_text(self.app))
             };
-            empty_composer_visual_rows(hint.as_deref(), content_width, input_rows_budget)
+            empty_composer_visual_rows(hint.as_deref(), input_content_width, input_rows_budget)
         } else {
             visible_lines.len()
         };
         let top_padding = composer_top_padding(visual_rows, input_rows_budget);
 
-        let idle_prompt_inset = u16::from(
-            input_text.is_empty() && !self.app.is_history_search_active() && inner_area.width >= 3,
-        ) * 2;
+        let prompt_inset = u16::try_from(prompt_inset).unwrap_or(u16::MAX);
         let cursor_x = area
             .x
             .saturating_add(inner_area.x.saturating_sub(area.x))
-            .saturating_add(idle_prompt_inset)
+            .saturating_add(prompt_inset)
             .saturating_add(u16::try_from(cursor_col).unwrap_or(u16::MAX));
         let cursor_y = area
             .y
@@ -5154,6 +5178,28 @@ mod tests {
     }
 
     #[test]
+    fn composer_keeps_prompt_anchored_after_first_keystroke() {
+        let mut app = create_test_app();
+        app.composer_density = ComposerDensity::Comfortable;
+        app.input = "hello".to_string();
+        app.cursor_position = app.input.len();
+        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
+        let mention_menu_entries = Vec::<String>::new();
+        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let (cursor_x, cursor_y) = widget
+            .cursor_pos(area)
+            .expect("composer with input should expose a cursor");
+
+        assert_eq!(buf[(0, cursor_y)].symbol(), "❯");
+        assert_eq!(buf[(2, cursor_y)].symbol(), "h");
+        assert_eq!(cursor_x, 7, "cursor keeps the prompt gutter reserved");
+    }
+
+    #[test]
     fn composer_border_renders_session_title() {
         let mut app = create_test_app();
         app.ocean_treatment = crate::tui::ocean::OceanTreatment::Classic;
@@ -5487,7 +5533,7 @@ mod tests {
             .collect::<String>();
 
         assert!(rendered.contains("/fleet setup"));
-        assert!(!rendered.contains("▗▄▄"));
+        assert!(!rendered.contains("____/"));
     }
 
     #[test]
@@ -5506,7 +5552,7 @@ mod tests {
             );
             if height < 14 {
                 assert!(
-                    !rendered.contains("▗▄▄"),
+                    !rendered.contains("____/"),
                     "the decorative whale must yield before the Fleet action at {width}x{height}"
                 );
             }
