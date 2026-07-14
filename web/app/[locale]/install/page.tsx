@@ -54,7 +54,7 @@ docker run --rm -it \\
   ghcr.io/hmbown/codewhale:latest`;
 
 const FROM_SOURCE = `git clone https://github.com/Hmbown/CodeWhale
-cd Codewhale
+cd CodeWhale
 cargo build --release --locked
 
 # Install both binaries from the local checkout
